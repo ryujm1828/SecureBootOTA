@@ -91,17 +91,35 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   //앱 시작 물리적 주소
-  #define APP_START_ADDRESS 0x08001000
+
+  #define APP_START_ADDRESS 0x080010000
 
   // 정상적인 앱 존재하는 지 검사
   // 첫 번째 데이터가 RAM 영역 (0x20000000~0x200FFFFF)인지 확인
   if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
   {
-    HAL_Deinit(); // 부트로더가 사용한 HAL 초기화
-    
+
+	//모든 인터럽트 비활성화
+	__disable_irq();
+
+    //SysTick 타이머 끄기
+    SysTick->CTRL = 0;
+    SysTick->LOAD = 0;
+    SysTick->VAL = 0;
+
+	HAL_DeInit(); // 부트로더가 사용한 HAL 초기화
+
+	for (int i = 0; i < 8; i++) {
+	        NVIC->ICER[i] = 0xFFFFFFFF;
+	        NVIC->ICPR[i] = 0xFFFFFFFF;
+	}
+
     //Cortex-M 계열에서 시작점 주소 + 4바이트 위치가 진짜 시작 주소
     uint32_t jump_address = *(__IO uint32_t*) (APP_START_ADDRESS + 4);
     void (*app_reset_handler)(void) = (void (*)(void))jump_address;
+
+    //인터럽트 허용
+    __enable_irq();
 
     //MSP를 앱 시작 주소로 설정
     __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
