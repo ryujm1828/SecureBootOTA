@@ -90,7 +90,29 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  //앱 시작 물리적 주소
+  #define APP_START_ADDRESS 0x08001000
 
+  // 정상적인 앱 존재하는 지 검사
+  // 첫 번째 데이터가 RAM 영역 (0x20000000~0x200FFFFF)인지 확인
+  if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
+  {
+    HAL_Deinit(); // 부트로더가 사용한 HAL 초기화
+    
+    //Cortex-M 계열에서 시작점 주소 + 4바이트 위치가 진짜 시작 주소
+    uint32_t jump_address = *(__IO uint32_t*) (APP_START_ADDRESS + 4);
+    void (*app_reset_handler)(void) = (void (*)(void))jump_address;
+
+    //MSP를 앱 시작 주소로 설정
+    __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
+
+    //앱 시작 주소로 점프
+    app_reset_handler();
+  }
+  else
+  {
+    //앱이 없을 때
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -98,8 +120,6 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-	  HAL_Delay(500);
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
