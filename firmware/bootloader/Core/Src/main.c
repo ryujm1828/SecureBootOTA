@@ -56,6 +56,14 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#include <stdio.h>
+// _write() 재정의
+int _write(int file, char *ptr, int len)
+{
+    // UART로 문자열 전송
+    HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, HAL_MAX_DELAY);
+    return len;
+}
 
 /* USER CODE END 0 */
 
@@ -91,45 +99,52 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   //앱 시작 물리적 주소
+  #define APP_START_ADDRESS 0x08010000
 
-  #define APP_START_ADDRESS 0x080010000
+  printf("\r\n===========================\r\n");
+  printf("Bootloader Started\r\n");
+  printf("Checking App at Address: 0x%08X\r\n",APP_START_ADDRESS);
 
   // 정상적인 앱 존재하는 지 검사
   // 첫 번째 데이터가 RAM 영역 (0x20000000~0x200FFFFF)인지 확인
   if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
   {
 
-	//모든 인터럽트 비활성화
-	__disable_irq();
+	  printf("Valid App found. Jumping to App...\r\n");
+	  HAL_Delay(50); // UART 전송될 때 까지 대기
 
-    //SysTick 타이머 끄기
-    SysTick->CTRL = 0;
-    SysTick->LOAD = 0;
-    SysTick->VAL = 0;
+	  //모든 인터럽트 비활성화
+	  __disable_irq();
 
-	HAL_DeInit(); // 부트로더가 사용한 HAL 초기화
+	  //SysTick 타이머 끄기
+	  SysTick->CTRL = 0;
+	  SysTick->LOAD = 0;
+	  SysTick->VAL = 0;
 
-	for (int i = 0; i < 8; i++) {
-	        NVIC->ICER[i] = 0xFFFFFFFF;
-	        NVIC->ICPR[i] = 0xFFFFFFFF;
-	}
+	  HAL_DeInit(); // 부트로더가 사용한 HAL 초기화
 
-    //Cortex-M 계열에서 시작점 주소 + 4바이트 위치가 진짜 시작 주소
-    uint32_t jump_address = *(__IO uint32_t*) (APP_START_ADDRESS + 4);
-    void (*app_reset_handler)(void) = (void (*)(void))jump_address;
+	  for (int i = 0; i < 8; i++) {
+		  NVIC->ICER[i] = 0xFFFFFFFF;
+	      NVIC->ICPR[i] = 0xFFFFFFFF;
+	  }
 
-    //인터럽트 허용
-    __enable_irq();
+	  //Cortex-M 계열에서 시작점 주소 + 4바이트 위치가 진짜 시작 주소
+	  uint32_t jump_address = *(__IO uint32_t*) (APP_START_ADDRESS + 4);
+	  void (*app_reset_handler)(void) = (void (*)(void))jump_address;
 
-    //MSP를 앱 시작 주소로 설정
-    __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
+	  //인터럽트 허용
+	  __enable_irq();
 
-    //앱 시작 주소로 점프
-    app_reset_handler();
+	  //MSP를 앱 시작 주소로 설정
+	  __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
+
+	  //앱 시작 주소로 점프
+	  app_reset_handler();
   }
   else
   {
-    //앱이 없을 때
+	  //앱이 없을 때
+	  printf("No valid App.\r\n");
   }
   /* USER CODE END 2 */
 
