@@ -67,7 +67,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  SCB->VTOR = 0x08010000; // TestApp 시작 주소로 벡터 테이블 재배치
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
