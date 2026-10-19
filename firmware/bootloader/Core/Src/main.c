@@ -26,6 +26,22 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+// Pack structures to 1-byte alignment
+#pragma pack(push, 1)
+typedef struct {
+  uint8_t magic[4];             // 4 bytes: "OTAF"
+  uint16_t format_version;      // 2 bytes: Format version
+  uint16_t header_size;         // 2 bytes: 120
+  uint32_t target_id;           // 4 bytes: Target device ID (ex: 0x0411)
+  uint32_t image_version;       // 4 bytes: Image version
+  uint32_t image_size;          // 4 bytes: Size of the image payload
+  uint8_t hash_alg;             // 1 byte: Hash algorithm (0x01 for SHA-256)
+  uint8_t sig_alg;              // 1 byte: Signature algorithm (0x01 for ECDSA P-256)
+  uint8_t reserved[2];          // 2 bytes: 0x00, 0x00
+  uint8_t payload_sha256[32];   // 32 bytes: SHA-256 hash of the image payload
+  uint8_t signature[64];        // 64 bytes: ECDSA signature (r 32 + s 32)
+} ota_header_t;
+#pragma pack(pop)
 
 /* USER CODE END PTD */
 
@@ -57,13 +73,41 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #include <stdio.h>
-// _write() 재정의
+#include <string.h>
+// _write() function is used by printf() to send data over UART
 int _write(int file, char *ptr, int len)
 {
-    // UART로 문자열 전송
+    // Send data over UART
     HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, HAL_MAX_DELAY);
     return len;
 }
+
+#define EXPECTED_MAGIC "OTAF"
+#define EXPECTED_FORMAT_VERSION 0x0001
+#define EXPECTED_HEADER_SIZE 120
+#define EXPECTED_TARGET_ID 0x0411
+
+int validate_ota_header(const ota_header_t *header){
+  if (memcmp(header->magic, EXPECTED_MAGIC, 4) != 0) {
+    printf("[ERROR] Invalid magic number in OTA header. Expected: %s, Got: %s\r\n", EXPECTED_MAGIC, header->magic);
+    return -1;
+  }
+  if (header->format_version != EXPECTED_FORMAT_VERSION) {
+    printf("[ERROR] Unsupported format version in OTA header. Expected: 0x%04X, Got: 0x%04X\r\n", EXPECTED_FORMAT_VERSION, header->format_version);
+    return -2;
+  }
+  if (header->header_size != EXPECTED_HEADER_SIZE) {
+    printf("[ERROR] Unexpected header size in OTA header. Expected: %d, Got: %d\r\n", EXPECTED_HEADER_SIZE, header->header_size);
+    return -3;
+  }
+  if (header->target_id != EXPECTED_TARGET_ID) {
+    printf("[ERROR] Target ID mismatch in OTA header. Expected: 0x%08X, Got: 0x%08lX\r\n", EXPECTED_TARGET_ID, header->target_id);
+    return -4;
+  }
+  printf("[Success] OTA header validation passed.\r\n");
+  printf("Format Version: 0x%04X, Header Size: %d, Target ID: 0x%08lX\r\n", header->format_version, header->header_size, header->target_id);
+  return 0; // Header is valid
+} 
 
 /* USER CODE END 0 */
 
@@ -98,52 +142,53 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  //앱 시작 물리적 주소
+  
+  //App start physicaladdress
   #define APP_START_ADDRESS 0x08010000
 
   printf("\r\n===========================\r\n");
   printf("Bootloader Started\r\n");
   printf("Checking App at Address: 0x%08X\r\n",APP_START_ADDRESS);
 
-  // 정상적인 앱 존재하는 지 검사
-  // 첫 번째 데이터가 RAM 영역 (0x20000000~0x200FFFFF)인지 확인
+  // Check if a valid application exists
+  // Check if the first word is a valid RAM address (0x20000000~0x200FFFFF)
   if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
   {
 
 	  printf("Valid App found. Jumping to App...\r\n");
-	  HAL_Delay(50); // UART 전송될 때 까지 대기
+	  HAL_Delay(50); // Wait for UART transmission to complete
 
-	  //모든 인터럽트 비활성화
+	  // Disable all interrupts before jumping to the application
 	  __disable_irq();
 
-	  //SysTick 타이머 끄기
+	  //SysTick disable
 	  SysTick->CTRL = 0;
 	  SysTick->LOAD = 0;
 	  SysTick->VAL = 0;
 
-	  HAL_DeInit(); // 부트로더가 사용한 HAL 초기화
+	  HAL_DeInit(); // Initialize the HAL library
 
 	  for (int i = 0; i < 8; i++) {
 		  NVIC->ICER[i] = 0xFFFFFFFF;
 	      NVIC->ICPR[i] = 0xFFFFFFFF;
 	  }
 
-	  //Cortex-M 계열에서 시작점 주소 + 4바이트 위치가 진짜 시작 주소
+    // start address + 4bytes is the real start address in Cortex-M series
 	  uint32_t jump_address = *(__IO uint32_t*) (APP_START_ADDRESS + 4);
 	  void (*app_reset_handler)(void) = (void (*)(void))jump_address;
 
-	  //인터럽트 허용
+	  //Enable interrupts
 	  __enable_irq();
 
-	  //MSP를 앱 시작 주소로 설정
+	  // Set MSP to the value at the start of the application
 	  __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
 
-	  //앱 시작 주소로 점프
+	  //Jump to the application reset handler
 	  app_reset_handler();
   }
   else
   {
-	  //앱이 없을 때
+	  //There is no valid application
 	  printf("No valid App.\r\n");
   }
   /* USER CODE END 2 */
