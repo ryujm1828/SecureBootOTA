@@ -131,78 +131,84 @@ void wait_for_ota_package(void){
   uint16_t expected_seq = 0;
   uint32_t total_received = 0;
 
-  printf("\r\n Waiting for OTA update form PC...\r\n")
+  printf("\r\n Waiting for OTA update from PC...\r\n");
 
   while(1){
-    //Wait for the header
-    if (HAL_UART_Receive(&huart2, header, 8, 1000) != HAL_OK) continue;
+    // Check for the magic number (0xABCD)
+    uint8_t b;
+    if (HAL_UART_Receive(&huart2, &b, 1, 1000) != HAL_OK) continue;
+    if (b != (FRAME_MAGIC & 0xFF)) continue; // 0xCD
 
-    uint16_t magic = header[0] | (header[1] << 8);
+    if (HAL_UART_Receive(&huart2, &b, 1, 100) != HAL_OK) continue;
+    if (b != ((FRAME_MAGIC >> 8) & 0xFF)) continue; // 0xAB
+
+    // Receive the rest of the header (version, command, sequence, length)
+    header[0] = (uint8_t)(FRAME_MAGIC & 0xFF);
+    header[1] = (uint8_t)((FRAME_MAGIC >> 8) & 0xFF);
+    if (HAL_UART_Receive(&huart2, &header[2], 6, 1000) != HAL_OK) continue;
+
     uint8_t version = header[2];
     uint8_t cmd = header[3];
     uint16_t seq = header[4] | (header[5] << 8);
-    uint8_t length = header[6] | (header[7] << 8);
+    uint16_t length = header[6] | (header[7] << 8);
 
-    if (magic != FRAME_MAGIC) continue;
+    (void)version;
 
+    // Receive payload if length is valid
     if (length > 0 && length <= 256){
-      if (HAL_UART_Receive(&huart2, payload, length, 1000) != HAL_OK)
+      if (HAL_UART_Receive(&huart2, payload, length, 1000) != HAL_OK){
         send_response(NAK);
         continue;
+      }
     }
-  }
 
-  if (HAL_UART_Receive(&huart2, &checksum, 1, 1000) != HAL_OK){
-    send_response(NAK);
-    continue;
-  }
-  
-  uint8_t calculated_checksum = 0;
-  for (int i = 0; i < 8; i++) calculated_checksum += header[i];
-  for (int i = 0; i < length; i++) calculated_checksum += payload[i];
-
-  if(calculated_checksum != checksum){
-    printf("[ERROR] Checksum mismatch. Expected: 0x%02X, Got: 0x%02lX\r\n", checksum, calculated_checksum);
-    send_response(NAK);
-    continue;
-  }
-
-  if (cmd == CMD_HELLO){
-    printf("[HEllo] PC connected.\r\n");
-    send_response(ACK);
-  }
-  else if (cmd == CMD_BEGIN){
-    uint32_t total_size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
-    printf("[BEGIN] Starting OTA... Total bytes: %ld\r\n", total_size);
-    expected_seq = 0;
-    total_received = 0;
-    send_response(ACK);
-  }
-  else if (cmd == CMD_DATA){
-    if (seq != expected_seq){
-      printf("[ERROR] Sequence mismatch. Expected: %d, Got: %d\r\n", expected_seq, seq);
+    // Receive checksum
+    if (HAL_UART_Receive(&huart2, &checksum, 1, 1000) != HAL_OK){
       send_response(NAK);
       continue;
     }
-    printf("[DATA] Received DATA command. Sequence: %d, Length: %d\r\n", seq, length);
     
-    total_received += length;
-    expected_seq++;
-    send_response(ACK);
-  }
-  else if (cmd == CMD_END){
-    printf("[END] Received END command. Total bytes received: %ld\r\n", total_received);
-    send_response(ACK);
-    
-    printf("Rebooting system...\r\n");
-    HAL_Delay(1000);
-    NVIC_SystemReset();
-  }
-  else {
-    printf("[ERROR] Unknown command received: %d\r\n", cmd);
-    send_response(NAK);
-  }
+    // Verify checksum 
+    uint8_t calculated_checksum = 0;
+    for (int i = 0; i < 8; i++) calculated_checksum += header[i];
+    for (int i = 0; i < length; i++) calculated_checksum += payload[i];
 
+    if(calculated_checksum != checksum){
+      send_response(NAK);
+      continue;
+    }
+
+    // Process command
+    if (cmd == CMD_HELLO){
+      send_response(ACK);
+    }
+    else if (cmd == CMD_BEGIN){
+      uint32_t total_size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+      (void)total_size;
+      expected_seq = 0;
+      total_received = 0;
+      send_response(ACK);
+    }
+    else if (cmd == CMD_DATA){
+      if (seq != expected_seq){
+        send_response(NAK);
+        continue;
+      }
+      
+      // Write the received payload to flash memory at the appropriate address
+      total_received += length;
+      expected_seq++;
+      send_response(ACK);
+    }
+    else if (cmd == CMD_END){
+      send_response(ACK);
+      HAL_Delay(500);
+      NVIC_SystemReset();
+    }
+    else {
+      send_response(NAK);
+    }
+  }
 }
 
 /* USER CODE END 0 */

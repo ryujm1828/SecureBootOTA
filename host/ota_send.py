@@ -17,10 +17,10 @@ ACK = b'\x06'  # Acknowledgment byte
 NAK = b'\x15'  # Negative acknowledgment byte
 
 def calculate_checksum(data):
-    return sum(data) % 0XFF
+    return sum(data) & 0xFF
 
 def send_frame(ser, cmd, seq, payload=b""):
-    header = struct.pack("<H B B H H",MAGIC, VERSION, cmd, seq, len(payload))
+    header = struct.pack("<H B B H H", MAGIC, VERSION, cmd, seq, len(payload))
     frame_data = header + payload
     
     checksum = calculate_checksum(frame_data)
@@ -28,6 +28,7 @@ def send_frame(ser, cmd, seq, payload=b""):
 
     retry = 0
     while retry < 3:
+        ser.reset_input_buffer()
         ser.write(frame)
         ser.flush()
 
@@ -35,11 +36,13 @@ def send_frame(ser, cmd, seq, payload=b""):
         if response == ACK:
             return True
         elif response == NAK:
-            print(f"NAK received, retrying... ({retry}/3)")
+            print(f"NAK received, retrying... ({retry + 1}/3)")
+        elif not response:
+            print(f"Timeout, retrying... ({retry + 1}/3)")
         else:
-            print("Timeout, retrying...")
+            print(f"Unexpected response: 0x{response.hex()}, retrying... ({retry + 1}/3)")
         retry += 1
-        time.sleep(1)
+        time.sleep(0.5)
     
     raise Exception("Failed to send frame after 3 retries")
 
@@ -65,27 +68,29 @@ def send_ota_package(port, baudrate, file_path):
         print("Warning: OTA package is too small to contain header information.")
         return
 
-    print(f"{port} ({baudrate} bps) - Sending OTA package '{file_path}' ({size} bytes)")
+    print(f"{port} ({baudrate} bps) - Sending OTA package '{file_path}' ({total_size} bytes)")
     try:
         ser = serial.Serial(port, baudrate, timeout=2.0)
+        time.sleep(0.1)
+        ser.reset_input_buffer()
     except Exception as e:
         raise Exception(f"Failed to open serial port {port}: {e}")
     
     try:
-        #1. Send Hello command to check device readiness
+        # 1. Send Hello command to check device readiness
         print("Checking device(Hello)...")
         send_frame(ser, CMD_HELLO, 0)
 
-        #2. Send Begin command with OTA package size
-        print(f"Sending OTA package size: {size} bytes")
-        size_payload = struct.pack("<I", size)
+        # 2. Send Begin command with OTA package size
+        print(f"Sending OTA package size: {total_size} bytes")
+        size_payload = struct.pack("<I", total_size)
         send_frame(ser, CMD_BEGIN, 0, size_payload)
 
         chunk_size = 256
         seq = 0
         offset = 0
         
-        #3. Send OTA package data in chunks
+        # 3. Send OTA package data in chunks
         print("Sending OTA package data...")
         while offset < total_size:
             chunk = ota_data[offset:offset + chunk_size]
@@ -98,12 +103,12 @@ def send_ota_package(port, baudrate, file_path):
 
         print()
 
-        #4. Send End command to finalize the OTA process
+        # 4. Send End command to finalize the OTA process
         print("Sending OTA package end...")
         send_frame(ser, CMD_END, seq)
         print("OTA package sent successfully.")
     except Exception as e:
-        print(f"Error during OTA package sending: {e}")
+        print(f"\nError during OTA package sending: {e}")
     finally:
         ser.close()
 
@@ -114,4 +119,4 @@ if __name__ == "__main__":
     parser.add_argument("--package", required=True, help="Path to the OTA package file")
 
     args = parser.parse_args()
-    send_ota_package(args.port, args.baud, args.package)
+    send_ota_package(args.port, args.baudrate, args.package)
