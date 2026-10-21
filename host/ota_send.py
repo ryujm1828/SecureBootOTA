@@ -106,6 +106,13 @@ def send_ota_package(port, baudrate, file_path):
         # 4. Send End command to finalize the OTA process
         print("Sending OTA package end...")
         send_frame(ser, CMD_END, seq)
+
+        time.sleep(0.5)
+
+        while ser.in_waiting > 0:
+            board_log = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+            print(board_log, end="")
+
         print("OTA package sent successfully.")
     except Exception as e:
         print(f"\nError during OTA package sending: {e}")

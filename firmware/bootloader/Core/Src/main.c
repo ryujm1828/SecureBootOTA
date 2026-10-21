@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "sha256.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,6 +110,8 @@ int validate_ota_header(const ota_header_t *header){
 } 
 
 // OTA Protocol CONSTANTS
+
+
 #define FRAME_MAGIC 0xABCD
 #define CMD_HELLO 1
 #define CMD_BEGIN 2
@@ -123,6 +125,7 @@ void send_response(uint8_t res){
   HAL_UART_Transmit(&huart2, &res, 1, 100);
 }
 
+
 void wait_for_ota_package(void){
   uint8_t header[8];
   uint8_t payload[256];
@@ -130,6 +133,10 @@ void wait_for_ota_package(void){
 
   uint16_t expected_seq = 0;
   uint32_t total_received = 0;
+
+  SHA256_CTX sha_ctx;
+  uint8_t expected_hash[32];
+  uint8_t calculated_hash[32];
 
   printf("\r\n Waiting for OTA update from PC...\r\n");
 
@@ -185,25 +192,54 @@ void wait_for_ota_package(void){
     else if (cmd == CMD_BEGIN){
       uint32_t total_size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
       (void)total_size;
+      sha256_init(&sha_ctx);
       expected_seq = 0;
       total_received = 0;
       send_response(ACK);
     }
-    else if (cmd == CMD_DATA){
-      if (seq != expected_seq){
+    else if (cmd == CMD_DATA) {
+      if (seq == expected_seq) {
+                
+        // 첫 번째 조각(seq 0) 수신 시: 헤더와 앱 데이터 분리
+        if (seq == 0) {
+            // 1. 헤더의 56번째 바이트부터 32바이트(원본 SHA-256)를 복사해 둠
+            ota_header_t *ota_hdr = (ota_header_t *)payload;
+            memcpy(expected_hash, ota_hdr->payload_sha256, 32);
+                    
+            // 2. 앞의 120바이트(헤더)를 건너뛰고, 남은 앱 데이터만 해시에 업데이트
+            if (length > 120) {
+                sha256_update(&sha_ctx, &payload[120], length - 120);
+            }
+        } 
+        // 두 번째 조각(seq 1)부터는 100% 앱 데이터이므로 통째로 해시에 업데이트
+        else {
+            sha256_update(&sha_ctx, payload, length);
+        }
+
+        total_received += length;
+        expected_seq++;
+                
+        send_response(ACK);
+    } else {
         send_response(NAK);
-        continue;
+    }
+    }
+    else if (cmd == CMD_END) {
+      // 모든 데이터 수신 완료 후 최종 해시 도출
+      sha256_final(&sha_ctx, calculated_hash);
+      send_response(ACK);
+
+      // 공중에서 계산한 해시와 헤더에 적혀있던 해시 비교
+      if (memcmp(expected_hash, calculated_hash, 32) == 0) {
+          printf("[END] Transfer Complete! SHA-256 Validated.\r\n");
+      } else {
+          printf("[END] Warning: SHA-256 Hash Mismatch!\r\n");
       }
       
-      // Write the received payload to flash memory at the appropriate address
-      total_received += length;
-      expected_seq++;
-      send_response(ACK);
-    }
-    else if (cmd == CMD_END){
-      send_response(ACK);
-      HAL_Delay(500);
-      NVIC_SystemReset();
+            
+      printf("Rebooting system...\r\n");
+      HAL_Delay(1000);
+      NVIC_SystemReset(); 
     }
     else {
       send_response(NAK);
@@ -254,7 +290,8 @@ int main(void)
 
   // Check if a valid application exists
   // Check if the first word is a valid RAM address (0x20000000~0x200FFFFF)
-  if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
+  //if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
+  if(0)
   {
 
 	  printf("Valid App found. Jumping to App...\r\n");
