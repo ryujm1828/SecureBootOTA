@@ -133,6 +133,7 @@ void wait_for_ota_package(void){
 
   uint16_t expected_seq = 0;
   uint32_t total_received = 0;
+  uint32_t flash_write_addr = 0x08010000; // Start address for writing the new firmware
 
   SHA256_CTX sha_ctx;
   uint8_t expected_hash[32];
@@ -192,29 +193,62 @@ void wait_for_ota_package(void){
     else if (cmd == CMD_BEGIN){
       uint32_t total_size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
       (void)total_size;
+      
       sha256_init(&sha_ctx);
       expected_seq = 0;
       total_received = 0;
+      flash_write_addr = 0x08010000; // Reset the flash write address
+
+      HAL_FLASH_Unlock();
+
+      // Clear any existing flash error flags before erasing
+      __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
+                             FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+
+      FLASH_EraseInitTypeDef EraseInitStruct;
+      uint32_t SectorError;
+      EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
+      EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+      EraseInitStruct.Sector = FLASH_SECTOR_4; // 0x08010000 is in Sector 4 for STM32F4
+      EraseInitStruct.NbSectors = 4;    // Sector 4, 5, 6, 7 (0x08010000 ~ 0x080FFFFF)
+
+      HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError);
+      HAL_FLASH_Lock();
+
       send_response(ACK);
     }
     else if (cmd == CMD_DATA) {
       if (seq == expected_seq) {
-                
-        // 첫 번째 조각(seq 0) 수신 시: 헤더와 앱 데이터 분리
+        uint8_t *data_ptr = payload;
+        uint16_t data_len = length;
+
+        // Separate the OTA header from the payload for the first sequence
         if (seq == 0) {
-            // 1. 헤더의 56번째 바이트부터 32바이트(원본 SHA-256)를 복사해 둠
+            // Copy the expected SHA-256 hash from the OTA header
             ota_header_t *ota_hdr = (ota_header_t *)payload;
             memcpy(expected_hash, ota_hdr->payload_sha256, 32);
                     
-            // 2. 앞의 120바이트(헤더)를 건너뛰고, 남은 앱 데이터만 해시에 업데이트
+            // Update the SHA-256 hash with the payload data after the header (from byte 120 onwards)
             if (length > 120) {
                 sha256_update(&sha_ctx, &payload[120], length - 120);
             }
+            data_ptr = &payload[120];
+            data_len = length - 120;
         } 
-        // 두 번째 조각(seq 1)부터는 100% 앱 데이터이므로 통째로 해시에 업데이트
+        // Update the SHA-256 hash with the received payload
         else {
             sha256_update(&sha_ctx, payload, length);
         }
+        
+        HAL_FLASH_Unlock();
+        // Clear any existing flash error flags before writing
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
+                             FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+        for (int i = 0; i< data_len; i++){
+          HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, flash_write_addr + i, data_ptr[i]);
+        }
+        flash_write_addr += data_len;
+        HAL_FLASH_Lock();
 
         total_received += length;
         expected_seq++;
@@ -225,11 +259,11 @@ void wait_for_ota_package(void){
     }
     }
     else if (cmd == CMD_END) {
-      // 모든 데이터 수신 완료 후 최종 해시 도출
+      // Calculate the final SHA-256 hash of the received data
       sha256_final(&sha_ctx, calculated_hash);
       send_response(ACK);
 
-      // 공중에서 계산한 해시와 헤더에 적혀있던 해시 비교
+      // Compare the calculated hash with the expected hash
       if (memcmp(expected_hash, calculated_hash, 32) == 0) {
           printf("[END] Transfer Complete! SHA-256 Validated.\r\n");
       } else {
@@ -246,6 +280,7 @@ void wait_for_ota_package(void){
     }
   }
 }
+
 
 /* USER CODE END 0 */
 
@@ -290,8 +325,7 @@ int main(void)
 
   // Check if a valid application exists
   // Check if the first word is a valid RAM address (0x20000000~0x200FFFFF)
-  //if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
-  if(0)
+  if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
   {
 
 	  printf("Valid App found. Jumping to App...\r\n");
