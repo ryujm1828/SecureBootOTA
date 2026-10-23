@@ -107,7 +107,7 @@ def send_ota_package(port, baudrate, file_path):
         print("Sending OTA package end...")
         send_frame(ser, CMD_END, seq)
 
-        time.sleep(0.5)
+        time.sleep(5) 
 
         while ser.in_waiting > 0:
             board_log = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')

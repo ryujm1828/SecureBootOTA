@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sha256.h"
+#include "uECC.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -109,9 +110,15 @@ int validate_ota_header(const ota_header_t *header){
   return 0; // Header is valid
 } 
 
+// ECDSA public key in C array format 
+const uint8_t ecdsa_public_key[64] = {
+    0xf6, 0x6b, 0x60, 0x08, 0xf5, 0xf1, 0xa8, 0xab, 0x02, 0x04, 0xd5, 0x93, 0x8d, 0x55, 0x12, 0xe3,
+    0x70, 0xdc, 0x6f, 0x7d, 0xeb, 0x53, 0x14, 0xaf, 0x6b, 0xbe, 0x07, 0x1f, 0x7e, 0x91, 0xf4, 0x0f,
+    0x58, 0xd5, 0x42, 0xe4, 0x03, 0x92, 0xf7, 0x99, 0x43, 0xbd, 0x06, 0x68, 0x90, 0x65, 0x61, 0x77,
+    0x68, 0x25, 0xa8, 0xdb, 0x58, 0x9f, 0x2d, 0xb3, 0x9d, 0x39, 0x57, 0xb7, 0x68, 0x37, 0x14, 0x6f
+};
+
 // OTA Protocol CONSTANTS
-
-
 #define FRAME_MAGIC 0xABCD
 #define CMD_HELLO 1
 #define CMD_BEGIN 2
@@ -125,6 +132,7 @@ void send_response(uint8_t res){
   HAL_UART_Transmit(&huart2, &res, 1, 100);
 }
 
+uint8_t current_sec_version = 2;
 
 void wait_for_ota_package(void){
   uint8_t header[8];
@@ -138,6 +146,9 @@ void wait_for_ota_package(void){
   SHA256_CTX sha_ctx;
   uint8_t expected_hash[32];
   uint8_t calculated_hash[32];
+
+  uint8_t expected_signature[64];
+  uint8_t header_hash[32];
 
   printf("\r\n Waiting for OTA update from PC...\r\n");
 
@@ -226,8 +237,20 @@ void wait_for_ota_package(void){
         if (seq == 0) {
             // Copy the expected SHA-256 hash from the OTA header
             ota_header_t *ota_hdr = (ota_header_t *)payload;
+
+            if(ota_hdr->image_version < current_sec_version){
+              send_response(NAK);
+              continue;
+            }
             memcpy(expected_hash, ota_hdr->payload_sha256, 32);
-                    
+            memcpy(expected_signature, ota_hdr->signature, 64);
+
+            SHA256_CTX hdr_sha_ctx;
+            sha256_init(&hdr_sha_ctx);
+            sha256_update(&hdr_sha_ctx, payload, 56);
+            sha256_final(&hdr_sha_ctx, header_hash);
+
+            
             // Update the SHA-256 hash with the payload data after the header (from byte 120 onwards)
             if (length > 120) {
                 sha256_update(&sha_ctx, &payload[120], length - 120);
@@ -265,15 +288,26 @@ void wait_for_ota_package(void){
 
       // Compare the calculated hash with the expected hash
       if (memcmp(expected_hash, calculated_hash, 32) == 0) {
-          printf("[END] Transfer Complete! SHA-256 Validated.\r\n");
+        printf("[END] Transfer Complete! SHA-256 Validated.\r\n");
+        int is_valid = uECC_verify(
+                    ecdsa_public_key,   // public key
+                    header_hash,        // header hash
+                    32,                 // hash size
+                    expected_signature, // signature
+                    uECC_secp256r1()    // curve
+        );
+
+        if (is_valid == 1) {
+          printf("[BOARD] ECDSA Signature MATCHED! Secure Boot SUCCESS!!\r\n");
+          printf("[BOARD] Rebooting to New Firmware...\r\n");
+          HAL_Delay(1000);
+          NVIC_SystemReset(); 
+        } else {
+          printf("[BOARD] ERROR: ECDSA Signature Mismatch! FIRMWARE REJECTED!!\r\n");
+        }
       } else {
-          printf("[END] Warning: SHA-256 Hash Mismatch!\r\n");
+        printf("[END] Warning: SHA-256 Hash Mismatch!\r\n");
       }
-      
-            
-      printf("Rebooting system...\r\n");
-      HAL_Delay(1000);
-      NVIC_SystemReset(); 
     }
     else {
       send_response(NAK);
