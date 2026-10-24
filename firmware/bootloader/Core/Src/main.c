@@ -30,7 +30,7 @@
 // Pack structures to 1-byte alignment
 #pragma pack(push, 1)
 typedef struct {
-  uint8_t magic[4];             // 4 bytes: "OTAF"
+  uint32_t magic;               // 4 bytes: "OTAF"
   uint16_t format_version;      // 2 bytes: Format version
   uint16_t header_size;         // 2 bytes: 120
   uint32_t target_id;           // 4 bytes: Target device ID (ex: 0x0411)
@@ -75,42 +75,25 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN 0 */
 #include <stdio.h>
 #include <string.h>
+
 // _write() function is used by printf() to send data over UART
 int _write(int file, char *ptr, int len)
 {
-    // Send data over UART
     HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 1000);
     return len;
 }
 
-#define EXPECTED_MAGIC "OTAF"
+#define HEADER_START_ADDRESS 0x08010000
+#define APP_START_ADDRESS    0x08010200
+
+#define EXPECTED_MAGIC ( (uint32_t)'O' | ((uint32_t)'T' << 8) | ((uint32_t)'A' << 16) | ((uint32_t)'F' << 24) )
 #define EXPECTED_FORMAT_VERSION 0x0001
 #define EXPECTED_HEADER_SIZE 120
 #define EXPECTED_TARGET_ID 0x0411
 
-int validate_ota_header(const ota_header_t *header){
-  if (memcmp(header->magic, EXPECTED_MAGIC, 4) != 0) {
-    printf("[ERROR] Invalid magic number in OTA header. Expected: %s, Got: %s\r\n", EXPECTED_MAGIC, header->magic);
-    return -1;
-  }
-  if (header->format_version != EXPECTED_FORMAT_VERSION) {
-    printf("[ERROR] Unsupported format version in OTA header. Expected: 0x%04X, Got: 0x%04X\r\n", EXPECTED_FORMAT_VERSION, header->format_version);
-    return -2;
-  }
-  if (header->header_size != EXPECTED_HEADER_SIZE) {
-    printf("[ERROR] Unexpected header size in OTA header. Expected: %d, Got: %d\r\n", EXPECTED_HEADER_SIZE, header->header_size);
-    return -3;
-  }
-  if (header->target_id != EXPECTED_TARGET_ID) {
-    printf("[ERROR] Target ID mismatch in OTA header. Expected: 0x%08X, Got: 0x%08lX\r\n", EXPECTED_TARGET_ID, header->target_id);
-    return -4;
-  }
-  printf("[Success] OTA header validation passed.\r\n");
-  printf("Format Version: 0x%04X, Header Size: %d, Target ID: 0x%08lX\r\n", header->format_version, header->header_size, header->target_id);
-  return 0; // Header is valid
-} 
+uint8_t current_sec_version = 2;
 
-// ECDSA public key in C array format 
+// ECDSA public key in C array format (NIST P-256)
 const uint8_t ecdsa_public_key[64] = {
     0xf6, 0x6b, 0x60, 0x08, 0xf5, 0xf1, 0xa8, 0xab, 0x02, 0x04, 0xd5, 0x93, 0x8d, 0x55, 0x12, 0xe3,
     0x70, 0xdc, 0x6f, 0x7d, 0xeb, 0x53, 0x14, 0xaf, 0x6b, 0xbe, 0x07, 0x1f, 0x7e, 0x91, 0xf4, 0x0f,
@@ -124,15 +107,109 @@ const uint8_t ecdsa_public_key[64] = {
 #define CMD_BEGIN 2
 #define CMD_DATA 3
 #define CMD_END 4
-#define ACK 0X06
-#define NAK 0X15
+#define ACK 0x06
+#define NAK 0x15
 
-// Function to send a response (ACK or NAK) over UART
 void send_response(uint8_t res){
   HAL_UART_Transmit(&huart2, &res, 1, 100);
 }
 
-uint8_t current_sec_version = 2;
+/**
+ * @brief  Verify the OTA header structure and its fields.
+ * @retval 1: Valid, 0: Error
+ */
+int validate_ota_header(const ota_header_t *header){
+  if (header->magic != EXPECTED_MAGIC) {
+    printf("[ERROR] Invalid magic in OTA header. Expected: 0x%08lX, Got: 0x%08lX\r\n", 
+           (unsigned long)EXPECTED_MAGIC, (unsigned long)header->magic);
+    return 0;
+  }
+  if (header->format_version != EXPECTED_FORMAT_VERSION) {
+    printf("[ERROR] Unsupported format version: 0x%04X\r\n", header->format_version);
+    return 0;
+  }
+  if (header->header_size != EXPECTED_HEADER_SIZE) {
+    printf("[ERROR] Unexpected header size: %d\r\n", header->header_size);
+    return 0;
+  }
+  if (header->target_id != EXPECTED_TARGET_ID) {
+    printf("[ERROR] Target ID mismatch. Expected: 0x%08lX, Got: 0x%08lX\r\n", 
+           (unsigned long)EXPECTED_TARGET_ID, (unsigned long)header->target_id);
+    return 0;
+  }
+  return 1;
+}
+
+/**
+ * @brief  Verify the stored firmware in flash (header and app binary)
+ * @retval 1: Valid, 0: Error
+ */
+int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
+  const ota_header_t *hdr = (const ota_header_t *)header_address;
+
+  if (!validate_ota_header(hdr)) {
+    return 0;
+  }
+
+  if (hdr->image_version < current_sec_version) {
+    printf("[SECURITY] Rollback detected! Img Ver: %lu < Min Ver: %u\r\n", 
+           (unsigned long)hdr->image_version, current_sec_version);
+    return 0;
+  }
+
+  uint8_t header_hash[32];
+  SHA256_CTX sha_ctx;
+  sha256_init(&sha_ctx);
+  sha256_update(&sha_ctx, (const uint8_t *)header_address, 56);
+  sha256_final(&sha_ctx, header_hash);
+
+  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr->signature, uECC_secp256r1()) != 1) {
+    printf("[SECURITY] ECDSA Signature Mismatch! Firmware Rejected.\r\n");
+    return 0;
+  }
+
+  uint8_t app_hash[32];
+  sha256_init(&sha_ctx);
+  sha256_update(&sha_ctx, (const uint8_t *)app_address, hdr->image_size);
+  sha256_final(&sha_ctx, app_hash);
+
+  if (memcmp(app_hash, hdr->payload_sha256, 32) != 0) {
+    printf("[SECURITY] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
+    return 0;
+  }
+
+  printf("[SECURITY] Verification Success! (Version: %lu, Size: %lu bytes)\r\n", 
+         (unsigned long)hdr->image_version, (unsigned long)hdr->image_size);
+  return 1;
+}
+
+/**
+ * @brief  Jump to the application at the specified address.
+ */
+void jump_to_application(uint32_t app_address) {
+  printf("Valid App found. Jumping to App at 0x%08lX...\r\n", (unsigned long)app_address);
+  HAL_Delay(50); // Delay to ensure UART transmission completes
+
+  __disable_irq();
+
+  SysTick->CTRL = 0;
+  SysTick->LOAD = 0;
+  SysTick->VAL = 0;
+
+  HAL_DeInit();
+
+  for (int i = 0; i < 8; i++) {
+    NVIC->ICER[i] = 0xFFFFFFFF;
+    NVIC->ICPR[i] = 0xFFFFFFFF;
+  }
+
+  uint32_t jump_address = *(__IO uint32_t *)(app_address + 4);
+  void (*app_reset_handler)(void) = (void (*)(void))jump_address;
+
+  __enable_irq();
+  __set_MSP(*(__IO uint32_t *)app_address);
+  app_reset_handler();
+}
 
 void wait_for_ota_package(void){
   uint8_t header[8];
@@ -141,27 +218,19 @@ void wait_for_ota_package(void){
 
   uint16_t expected_seq = 0;
   uint32_t total_received = 0;
-  uint32_t flash_write_addr = 0x08010000; // Start address for writing the new firmware
-
-  SHA256_CTX sha_ctx;
-  uint8_t expected_hash[32];
-  uint8_t calculated_hash[32];
-
-  uint8_t expected_signature[64];
-  uint8_t header_hash[32];
+  uint32_t header_addr = HEADER_START_ADDRESS;
+  uint32_t flash_write_addr = APP_START_ADDRESS;
 
   printf("\r\n Waiting for OTA update from PC...\r\n");
 
   while(1){
-    // Check for the magic number (0xABCD)
     uint8_t b;
     if (HAL_UART_Receive(&huart2, &b, 1, 1000) != HAL_OK) continue;
-    if (b != (FRAME_MAGIC & 0xFF)) continue; // 0xCD
+    if (b != (FRAME_MAGIC & 0xFF)) continue;
 
     if (HAL_UART_Receive(&huart2, &b, 1, 100) != HAL_OK) continue;
-    if (b != ((FRAME_MAGIC >> 8) & 0xFF)) continue; // 0xAB
+    if (b != ((FRAME_MAGIC >> 8) & 0xFF)) continue;
 
-    // Receive the rest of the header (version, command, sequence, length)
     header[0] = (uint8_t)(FRAME_MAGIC & 0xFF);
     header[1] = (uint8_t)((FRAME_MAGIC >> 8) & 0xFF);
     if (HAL_UART_Receive(&huart2, &header[2], 6, 1000) != HAL_OK) continue;
@@ -170,10 +239,8 @@ void wait_for_ota_package(void){
     uint8_t cmd = header[3];
     uint16_t seq = header[4] | (header[5] << 8);
     uint16_t length = header[6] | (header[7] << 8);
-
     (void)version;
 
-    // Receive payload if length is valid
     if (length > 0 && length <= 256){
       if (HAL_UART_Receive(&huart2, payload, length, 1000) != HAL_OK){
         send_response(NAK);
@@ -181,13 +248,11 @@ void wait_for_ota_package(void){
       }
     }
 
-    // Receive checksum
     if (HAL_UART_Receive(&huart2, &checksum, 1, 1000) != HAL_OK){
       send_response(NAK);
       continue;
     }
     
-    // Verify checksum 
     uint8_t calculated_checksum = 0;
     for (int i = 0; i < 8; i++) calculated_checksum += header[i];
     for (int i = 0; i < length; i++) calculated_checksum += payload[i];
@@ -197,22 +262,15 @@ void wait_for_ota_package(void){
       continue;
     }
 
-    // Process command
     if (cmd == CMD_HELLO){
       send_response(ACK);
     }
     else if (cmd == CMD_BEGIN){
-      uint32_t total_size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
-      (void)total_size;
-      
-      sha256_init(&sha_ctx);
       expected_seq = 0;
       total_received = 0;
-      flash_write_addr = 0x08010000; // Reset the flash write address
+      flash_write_addr = APP_START_ADDRESS;
 
       HAL_FLASH_Unlock();
-
-      // Clear any existing flash error flags before erasing
       __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
                              FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
 
@@ -220,8 +278,8 @@ void wait_for_ota_package(void){
       uint32_t SectorError;
       EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
       EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-      EraseInitStruct.Sector = FLASH_SECTOR_4; // 0x08010000 is in Sector 4 for STM32F4
-      EraseInitStruct.NbSectors = 4;    // Sector 4, 5, 6, 7 (0x08010000 ~ 0x080FFFFF)
+      EraseInitStruct.Sector = FLASH_SECTOR_4; // Sector 4 ~ 7
+      EraseInitStruct.NbSectors = 4;
 
       HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError);
       HAL_FLASH_Lock();
@@ -233,41 +291,33 @@ void wait_for_ota_package(void){
         uint8_t *data_ptr = payload;
         uint16_t data_len = length;
 
-        // Separate the OTA header from the payload for the first sequence
         if (seq == 0) {
-            // Copy the expected SHA-256 hash from the OTA header
-            ota_header_t *ota_hdr = (ota_header_t *)payload;
+          const ota_header_t *ota_hdr = (const ota_header_t *)payload;
+          if (!validate_ota_header(ota_hdr) || (ota_hdr->image_version < current_sec_version)) {
+            send_response(NAK);
+            continue;
+          }
 
-            if(ota_hdr->image_version < current_sec_version){
-              send_response(NAK);
-              continue;
-            }
-            memcpy(expected_hash, ota_hdr->payload_sha256, 32);
-            memcpy(expected_signature, ota_hdr->signature, 64);
+          // 헤더 120바이트 기록
+          HAL_FLASH_Unlock();
+          __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
+                                 FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
 
-            SHA256_CTX hdr_sha_ctx;
-            sha256_init(&hdr_sha_ctx);
-            sha256_update(&hdr_sha_ctx, payload, 56);
-            sha256_final(&hdr_sha_ctx, header_hash);
+          for (int i = 0; i < 120; i++) {
+            HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, header_addr + i, payload[i]);
+          }
+          HAL_FLASH_Lock();
 
-            
-            // Update the SHA-256 hash with the payload data after the header (from byte 120 onwards)
-            if (length > 120) {
-                sha256_update(&sha_ctx, &payload[120], length - 120);
-            }
-            data_ptr = &payload[120];
-            data_len = length - 120;
-        } 
-        // Update the SHA-256 hash with the received payload
-        else {
-            sha256_update(&sha_ctx, payload, length);
+          data_ptr = &payload[120];
+          data_len = length - 120;
         }
-        
+
+        // 앱 바이너리 기록
         HAL_FLASH_Unlock();
-        // Clear any existing flash error flags before writing
         __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
-                             FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-        for (int i = 0; i< data_len; i++){
+                               FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+
+        for (int i = 0; i < data_len; i++) {
           HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, flash_write_addr + i, data_ptr[i]);
         }
         flash_write_addr += data_len;
@@ -275,38 +325,21 @@ void wait_for_ota_package(void){
 
         total_received += length;
         expected_seq++;
-                
         send_response(ACK);
-    } else {
+      } else {
         send_response(NAK);
-    }
+      }
     }
     else if (cmd == CMD_END) {
-      // Calculate the final SHA-256 hash of the received data
-      sha256_final(&sha_ctx, calculated_hash);
       send_response(ACK);
 
-      // Compare the calculated hash with the expected hash
-      if (memcmp(expected_hash, calculated_hash, 32) == 0) {
-        printf("[END] Transfer Complete! SHA-256 Validated.\r\n");
-        int is_valid = uECC_verify(
-                    ecdsa_public_key,   // public key
-                    header_hash,        // header hash
-                    32,                 // hash size
-                    expected_signature, // signature
-                    uECC_secp256r1()    // curve
-        );
-
-        if (is_valid == 1) {
-          printf("[BOARD] ECDSA Signature MATCHED! Secure Boot SUCCESS!!\r\n");
-          printf("[BOARD] Rebooting to New Firmware...\r\n");
-          HAL_Delay(1000);
-          NVIC_SystemReset(); 
-        } else {
-          printf("[BOARD] ERROR: ECDSA Signature Mismatch! FIRMWARE REJECTED!!\r\n");
-        }
+      // 플래시에 구워진 새 펌웨어 통합 검증!
+      if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+        printf("[BOARD] OTA Update Verified Successfully! Rebooting...\r\n");
+        HAL_Delay(1000);
+        NVIC_SystemReset();
       } else {
-        printf("[END] Warning: SHA-256 Hash Mismatch!\r\n");
+        printf("[BOARD] ERROR: Flashed Firmware Verification Failed!\r\n");
       }
     }
     else {
@@ -314,8 +347,6 @@ void wait_for_ota_package(void){
     }
   }
 }
-
-
 /* USER CODE END 0 */
 
 /**
@@ -349,59 +380,24 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  
-  //App start physicaladdress
-  #define APP_START_ADDRESS 0x08010000
-
   printf("\r\n===========================\r\n");
-  printf("Bootloader Started\r\n");
-  printf("Checking App at Address: 0x%08X\r\n",APP_START_ADDRESS);
-
-  // Check if a valid application exists
-  // Check if the first word is a valid RAM address (0x20000000~0x200FFFFF)
-  if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000 ) == 0x20000000)
-  {
-
-	  printf("Valid App found. Jumping to App...\r\n");
-	  HAL_Delay(50); // Wait for UART transmission to complete
-
-	  // Disable all interrupts before jumping to the application
-	  __disable_irq();
-
-	  //SysTick disable
-	  SysTick->CTRL = 0;
-	  SysTick->LOAD = 0;
-	  SysTick->VAL = 0;
-
-	  HAL_DeInit(); // Initialize the HAL library
-
-	  for (int i = 0; i < 8; i++) {
-		  NVIC->ICER[i] = 0xFFFFFFFF;
-	      NVIC->ICPR[i] = 0xFFFFFFFF;
-	  }
-
-    // start address + 4bytes is the real start address in Cortex-M series
-	  uint32_t jump_address = *(__IO uint32_t*) (APP_START_ADDRESS + 4);
-	  void (*app_reset_handler)(void) = (void (*)(void))jump_address;
-
-	  //Enable interrupts
-	  __enable_irq();
-
-	  // Set MSP to the value at the start of the application
-	  __set_MSP(*(__IO uint32_t*)APP_START_ADDRESS);
-
-	  //Jump to the application reset handler
-	  app_reset_handler();
-  }
-  else
-  {
-	  //There is no valid application
-	  printf("No valid App. Entering RECOVERY mode.\r\n");
-    
-    // Wait for OTA package from PC
+  printf("Secure Bootloader Started\r\n");
+  printf("Checking App at Address: 0x%08lX\r\n", (unsigned long)APP_START_ADDRESS);
+  
+  // Flash에 저장된 펌웨어 검증 (헤더 포맷, 롤백 방지, 서명, 무결성 해시)
+  if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+    // 유효한 RAM 주소(MSP)인지 확인 (0x20000000~0x2001FFFF)
+    if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000) == 0x20000000) {
+      jump_to_application(APP_START_ADDRESS);
+    } else {
+      printf("BOOT ERROR: Invalid MSP address. Entering RECOVERY mode.\r\n");
+      wait_for_ota_package();
+    }
+  } else {
+    printf("No valid/verified App found. Entering RECOVERY mode.\r\n");
     wait_for_ota_package();
   }
-  /* USER CODE END 2 */
+/* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
