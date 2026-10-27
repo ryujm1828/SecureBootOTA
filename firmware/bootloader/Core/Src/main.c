@@ -57,6 +57,8 @@ typedef struct {
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+SPI_HandleTypeDef hspi1;
+
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
@@ -67,8 +69,13 @@ UART_HandleTypeDef huart2;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void W25Q64_WaitForWriteEnd(void);
+void W25Q64_WriteEnable(void);
+void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t Size);
+void W25Q64_EraseSector(uint32_t SectorAddr);
+void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -379,14 +386,15 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   printf("\r\n===========================\r\n");
   printf("Secure Bootloader Started\r\n");
   printf("Checking App at Address: 0x%08lX\r\n", (unsigned long)APP_START_ADDRESS);
-  
-  // Flash에 저장된 펌웨어 검증 (헤더 포맷, 롤백 방지, 서명, 무결성 해시)
+
+  /*
+  // Verify firmware stored in internal flash
   if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
-    // 유효한 RAM 주소(MSP)인지 확인 (0x20000000~0x2001FFFF)
     if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000) == 0x20000000) {
       jump_to_application(APP_START_ADDRESS);
     } else {
@@ -397,13 +405,59 @@ int main(void)
     printf("No valid/verified App found. Entering RECOVERY mode.\r\n");
     wait_for_ota_package();
   }
-/* USER CODE END 2 */
+  */
+
+  printf("\r\n========================================\r\n");
+  printf("W25Q64 SPI Communication Test\r\n");
+
+  // Read JEDEC ID (0x9F)
+  uint8_t cmd = 0x9F;
+  uint8_t id_buf[3] = {0};
+
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi1, &cmd, 1, 100);
+  HAL_SPI_Receive(&hspi1, id_buf, 3, 100);
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
+
+  printf("JEDEC ID : 0x%02X 0x%02X 0x%02X\r\n", id_buf[0], id_buf[1], id_buf[2]);
+
+  if (id_buf[0] == 0xEF && id_buf[1] == 0x40 && id_buf[2] == 0x17) {
+    printf("-> [SUCCESS] W25Q64 is properly connected!\r\n");
+  } else {
+    printf("-> [ERROR] Unknown Chip or SPI Connection Failed.\r\n");
+  }
+
+  printf("\r\n[TEST] W25Q64 Erase & Write Test...\r\n");
+
+  uint8_t write_buf[16] = "Hello OTA!";
+  uint8_t read_buf[16] = {0};
+  uint32_t target_addr = 0x000000;
+
+  // Erase sector
+  W25Q64_EraseSector(target_addr);
+  printf("- Sector Erased.\r\n");
+
+  // Write page
+  W25Q64_WritePage(target_addr, write_buf, 10);
+  printf("- Data Written.\r\n");
+
+  // Read back
+  W25Q64_ReadData(target_addr, read_buf, 10);
+  printf("- Read Back: %s\r\n", read_buf);
+
+  if (memcmp(write_buf, read_buf, 10) == 0) {
+    printf("=> [SUCCESS] Flash Memory R/W Test Passed!\r\n");
+  } else {
+    printf("=> [ERROR] Data Mismatch!\r\n");
+  }
+  /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -453,6 +507,44 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
 /**
@@ -507,7 +599,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -515,12 +607,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pin : W25Q_CS_Pin */
+  GPIO_InitStruct.Pin = W25Q_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(W25Q_CS_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -528,7 +620,84 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void W25Q64_WaitForWriteEnd(void)
+{
+  uint8_t cmd = 0x05; // Read Status Register-1
+  uint8_t status = 0;
+  uint32_t timeout = 5000; // Timeout counter (ms)
 
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi1, &cmd, 1, 100);
+  do {
+    HAL_SPI_Receive(&hspi1, &status, 1, 100);
+    HAL_Delay(1);
+    timeout--;
+    if (timeout == 0) {
+      printf("[W25Q64 ERROR] Write timeout!\r\n");
+      break;
+    }
+  } while ((status & 0x01) == 0x01); // Wait until WIP bit is cleared
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
+}
+
+void W25Q64_WriteEnable(void)
+{
+  uint8_t cmd = 0x06; // Write Enable
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi1, &cmd, 1, 100);
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
+}
+
+void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t Size)
+{
+  uint8_t cmd[4];
+  cmd[0] = 0x03; // Read Data
+  cmd[1] = (ReadAddr >> 16) & 0xFF;
+  cmd[2] = (ReadAddr >> 8) & 0xFF;
+  cmd[3] = ReadAddr & 0xFF;
+
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi1, cmd, 4, 100);
+  HAL_SPI_Receive(&hspi1, pData, Size, 1000);
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
+}
+
+void W25Q64_EraseSector(uint32_t SectorAddr)
+{
+  W25Q64_WriteEnable();
+
+  uint8_t cmd[4];
+  cmd[0] = 0x20; // Sector Erase (4KB)
+  cmd[1] = (SectorAddr >> 16) & 0xFF;
+  cmd[2] = (SectorAddr >> 8) & 0xFF;
+  cmd[3] = SectorAddr & 0xFF;
+
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi1, cmd, 4, 100);
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
+
+  W25Q64_WaitForWriteEnd();
+}
+
+void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size)
+{
+  if (Size > 256) return; // Max page size is 256 bytes
+
+  W25Q64_WriteEnable();
+
+  uint8_t cmd[4];
+  cmd[0] = 0x02; // Page Program
+  cmd[1] = (PageAddr >> 16) & 0xFF;
+  cmd[2] = (PageAddr >> 8) & 0xFF;
+  cmd[3] = PageAddr & 0xFF;
+
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi1, cmd, 4, 100);
+  HAL_SPI_Transmit(&hspi1, pData, Size, 1000);
+  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
+
+  W25Q64_WaitForWriteEnd();
+}
 /* USER CODE END 4 */
 
 /**
