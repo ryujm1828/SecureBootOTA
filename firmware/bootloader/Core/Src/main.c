@@ -76,6 +76,7 @@ void W25Q64_WriteEnable(void);
 void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t Size);
 void W25Q64_EraseSector(uint32_t SectorAddr);
 void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size);
+void W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t Size);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -92,13 +93,11 @@ int _write(int file, char *ptr, int len)
 
 #define HEADER_START_ADDRESS 0x08010000
 #define APP_START_ADDRESS    0x08010200
-
+#define MAX_APP_BINARY_SIZE (0x70000 - 0x200) // Sector 4~7 (448KB) - Header (512B)
 #define EXPECTED_MAGIC ( (uint32_t)'O' | ((uint32_t)'T' << 8) | ((uint32_t)'A' << 16) | ((uint32_t)'F' << 24) )
 #define EXPECTED_FORMAT_VERSION 0x0001
 #define EXPECTED_HEADER_SIZE 120
 #define EXPECTED_TARGET_ID 0x0411
-
-uint8_t current_sec_version = 2;
 
 // ECDSA public key in C array format (NIST P-256)
 const uint8_t ecdsa_public_key[64] = {
@@ -154,16 +153,6 @@ int validate_ota_header(const ota_header_t *header){
 int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
   const ota_header_t *hdr = (const ota_header_t *)header_address;
 
-  if (!validate_ota_header(hdr)) {
-    return 0;
-  }
-
-  if (hdr->image_version < current_sec_version) {
-    printf("[SECURITY] Rollback detected! Img Ver: %lu < Min Ver: %u\r\n", 
-           (unsigned long)hdr->image_version, current_sec_version);
-    return 0;
-  }
-
   uint8_t header_hash[32];
   SHA256_CTX sha_ctx;
   sha256_init(&sha_ctx);
@@ -187,6 +176,63 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
 
   printf("[SECURITY] Verification Success! (Version: %lu, Size: %lu bytes)\r\n", 
          (unsigned long)hdr->image_version, (unsigned long)hdr->image_size);
+  return 1;
+}
+
+int verify_staging_firmware(uint32_t ext_header_address){
+  ota_header_t hdr;
+
+  W25Q64_ReadData(ext_header_address, (uint8_t *)&hdr, sizeof(ota_header_t));
+
+  if (!validate_ota_header(&hdr)) {
+    printf("[OTA ERROR] Invalid OTA header in staging area.\r\n");
+    return 0;
+  }
+
+  if (hdr.image_size == 0 || hdr.image_size > MAX_APP_BINARY_SIZE) {
+    printf("[OTA ERROR] Invalid image size: %lu bytes\r\n", (unsigned long)hdr.image_size);
+    return 0;
+  }
+
+  const ota_header_t *installed_hdr = (const ota_header_t *)HEADER_START_ADDRESS;
+  if(installed_hdr->magic == EXPECTED_MAGIC && hdr.image_version < installed_hdr->image_version) {
+    printf("[OTA ERROR] New image version (%lu) is not greater than installed version (%lu).\r\n", 
+           (unsigned long)hdr.image_version, (unsigned long)installed_hdr->image_version);
+    return 0;
+  }
+
+  uint8_t header_hash[32];
+  SHA256_CTX sha_ctx;
+  sha256_init(&sha_ctx);
+  sha256_update(&sha_ctx, (const uint8_t *)&hdr, 56);
+  sha256_final(&sha_ctx, header_hash);
+
+  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr.signature, uECC_secp256r1()) != 1) {
+    printf("[OTA ERROR] ECDSA Signature Mismatch in OTA header! Firmware Rejected.\r\n");
+    return 0;
+  }
+
+  uint8_t app_hash[32];
+  sha256_init(&sha_ctx);
+
+  uint32_t app_address = ext_header_address + sizeof(ota_header_t);
+  uint32_t remaining = hdr.image_size;
+  uint8_t chunk[256];
+
+  while (remaining > 0) {
+    uint16_t read_size = (remaining > sizeof(chunk)) ? sizeof(chunk) : remaining;
+    W25Q64_ReadData(app_address, chunk, read_size);
+    sha256_update(&sha_ctx, chunk, read_size);
+    app_address += read_size;
+    remaining -= read_size;
+  }
+  sha256_final(&sha_ctx, app_hash);
+
+  if(memcmp(app_hash, hdr.payload_sha256, 32) != 0) {
+    printf("[OTA ERROR] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
+    return 0;
+  }
+
   return 1;
 }
 
@@ -225,8 +271,7 @@ void wait_for_ota_package(void){
 
   uint16_t expected_seq = 0;
   uint32_t total_received = 0;
-  uint32_t header_addr = HEADER_START_ADDRESS;
-  uint32_t flash_write_addr = APP_START_ADDRESS;
+  static uint32_t ext_flash_addr = 0x000000;
 
   printf("\r\n Waiting for OTA update from PC...\r\n");
 
@@ -275,22 +320,7 @@ void wait_for_ota_package(void){
     else if (cmd == CMD_BEGIN){
       expected_seq = 0;
       total_received = 0;
-      flash_write_addr = APP_START_ADDRESS;
-
-      HAL_FLASH_Unlock();
-      __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
-                             FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-
-      FLASH_EraseInitTypeDef EraseInitStruct;
-      uint32_t SectorError;
-      EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
-      EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-      EraseInitStruct.Sector = FLASH_SECTOR_4; // Sector 4 ~ 7
-      EraseInitStruct.NbSectors = 4;
-
-      HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError);
-      HAL_FLASH_Lock();
-
+      ext_flash_addr = 0x000000;
       send_response(ACK);
     }
     else if (cmd == CMD_DATA) {
@@ -300,36 +330,24 @@ void wait_for_ota_package(void){
 
         if (seq == 0) {
           const ota_header_t *ota_hdr = (const ota_header_t *)payload;
-          if (!validate_ota_header(ota_hdr) || (ota_hdr->image_version < current_sec_version)) {
+          ota_header_t *installed_hdr = (ota_header_t *)HEADER_START_ADDRESS;
+          uint32_t current_version = 0;
+          if(installed_hdr->magic == EXPECTED_MAGIC) {
+            current_version = installed_hdr->image_version;
+          }
+          if (!validate_ota_header(ota_hdr) || ota_hdr->image_version < current_version) {
             send_response(NAK);
             continue;
           }
-
-          // 헤더 120바이트 기록
-          HAL_FLASH_Unlock();
-          __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
-                                 FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-
-          for (int i = 0; i < 120; i++) {
-            HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, header_addr + i, payload[i]);
+          // Erase necessary sectors in external flash for the new OTA package
+          uint32_t total_pkg_size = sizeof(ota_header_t) + ota_hdr->image_size;
+          uint32_t sectors_needed = (total_pkg_size + 4095) / 4096;
+          for (uint32_t i = 0; i < sectors_needed; i++) {
+              W25Q64_EraseSector(i * 0x1000);
           }
-          HAL_FLASH_Lock();
-
-          data_ptr = &payload[120];
-          data_len = length - 120;
         }
-
-        // 앱 바이너리 기록
-        HAL_FLASH_Unlock();
-        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
-                               FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-
-        for (int i = 0; i < data_len; i++) {
-          HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, flash_write_addr + i, data_ptr[i]);
-        }
-        flash_write_addr += data_len;
-        HAL_FLASH_Lock();
-
+        W25Q64_WriteStream(ext_flash_addr, data_ptr, data_len);
+        ext_flash_addr += data_len;
         total_received += length;
         expected_seq++;
         send_response(ACK);
@@ -338,19 +356,57 @@ void wait_for_ota_package(void){
       }
     }
     else if (cmd == CMD_END) {
-      send_response(ACK);
+      if (verify_staging_firmware(0x000000)) {
+        HAL_FLASH_Unlock();
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
+                               FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+        FLASH_EraseInitTypeDef EraseInitStruct;
+        uint32_t SectorError;
+        EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
+        EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+        EraseInitStruct.Sector = FLASH_SECTOR_4; // Sector 4 ~ 7
+        EraseInitStruct.NbSectors = 4;
+        HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError);
 
-      // 플래시에 구워진 새 펌웨어 통합 검증!
-      if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
-        printf("[BOARD] OTA Update Verified Successfully! Rebooting...\r\n");
-        HAL_Delay(1000);
-        NVIC_SystemReset();
-      } else {
-        printf("[BOARD] ERROR: Flashed Firmware Verification Failed!\r\n");
+        ota_header_t hdr;
+        W25Q64_ReadData(0x000000, (uint8_t *)&hdr, sizeof(ota_header_t));
+        
+        //Copy Header
+        uint8_t *header_ptr = (uint8_t *)&hdr;
+        for (uint32_t i = 0; i < sizeof(ota_header_t); i++) {
+          HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, HEADER_START_ADDRESS + i, header_ptr[i]);
+        }
+        
+        uint32_t src_app_addr = 0x000000 + sizeof(ota_header_t);
+        uint32_t dest_addr = APP_START_ADDRESS;
+        uint32_t remaining = hdr.image_size;
+        uint8_t buffer[256];
+
+        while (remaining > 0) {
+          uint16_t read_size = (remaining > sizeof(buffer)) ? sizeof(buffer) : remaining;
+          W25Q64_ReadData(src_app_addr, buffer, read_size);
+          for (uint16_t i = 0; i < read_size; i++) {
+            HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, dest_addr++, buffer[i]);
+          }
+          src_app_addr += read_size;
+          remaining -= read_size;
+        }
+        HAL_FLASH_Lock();
+
+        if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+          send_response(ACK);
+          printf("[OTA] Firmware update successful! Jumping to new App...\r\n");
+          HAL_Delay(500);
+          NVIC_SystemReset();
+        } else {
+          send_response(NAK);
+          printf("[OTA ERROR] Verification failed after flashing. Aborting.\r\n");
+        }
       }
-    }
-    else {
-      send_response(NAK);
+      else {
+        send_response(NAK);
+        printf("[OTA ERROR] Staging firmware verification failed!\r\n");
+      }
     }
   }
 }
@@ -391,64 +447,26 @@ int main(void)
   printf("\r\n===========================\r\n");
   printf("Secure Bootloader Started\r\n");
   printf("Checking App at Address: 0x%08lX\r\n", (unsigned long)APP_START_ADDRESS);
-
-  /*
-  // Verify firmware stored in internal flash
+  
+  // Enter OTA mode if the user button (B1) is pressed during boot
+  if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET) {
+    printf("[BOOT] User Button (B1) pressed! Entering OTA Mode...\r\n");
+    wait_for_ota_package();
+  }
+  
+  // Verify the stored firmware (header and app binary)
   if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+    // Check if the MSP (Main Stack Pointer) value is valid (should be in SRAM range)
     if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000) == 0x20000000) {
       jump_to_application(APP_START_ADDRESS);
     } else {
       printf("BOOT ERROR: Invalid MSP address. Entering RECOVERY mode.\r\n");
+      printf("Waiting for new OTA package...\r\n");
       wait_for_ota_package();
     }
   } else {
     printf("No valid/verified App found. Entering RECOVERY mode.\r\n");
     wait_for_ota_package();
-  }
-  */
-
-  printf("\r\n========================================\r\n");
-  printf("W25Q64 SPI Communication Test\r\n");
-
-  // Read JEDEC ID (0x9F)
-  uint8_t cmd = 0x9F;
-  uint8_t id_buf[3] = {0};
-
-  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
-  HAL_SPI_Transmit(&hspi1, &cmd, 1, 100);
-  HAL_SPI_Receive(&hspi1, id_buf, 3, 100);
-  HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
-
-  printf("JEDEC ID : 0x%02X 0x%02X 0x%02X\r\n", id_buf[0], id_buf[1], id_buf[2]);
-
-  if (id_buf[0] == 0xEF && id_buf[1] == 0x40 && id_buf[2] == 0x17) {
-    printf("-> [SUCCESS] W25Q64 is properly connected!\r\n");
-  } else {
-    printf("-> [ERROR] Unknown Chip or SPI Connection Failed.\r\n");
-  }
-
-  printf("\r\n[TEST] W25Q64 Erase & Write Test...\r\n");
-
-  uint8_t write_buf[16] = "Hello OTA!";
-  uint8_t read_buf[16] = {0};
-  uint32_t target_addr = 0x000000;
-
-  // Erase sector
-  W25Q64_EraseSector(target_addr);
-  printf("- Sector Erased.\r\n");
-
-  // Write page
-  W25Q64_WritePage(target_addr, write_buf, 10);
-  printf("- Data Written.\r\n");
-
-  // Read back
-  W25Q64_ReadData(target_addr, read_buf, 10);
-  printf("- Read Back: %s\r\n", read_buf);
-
-  if (memcmp(write_buf, read_buf, 10) == 0) {
-    printf("=> [SUCCESS] Flash Memory R/W Test Passed!\r\n");
-  } else {
-    printf("=> [ERROR] Data Mismatch!\r\n");
   }
   /* USER CODE END 2 */
 
@@ -697,6 +715,25 @@ void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size)
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
 
   W25Q64_WaitForWriteEnd();
+}
+
+void W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t Size)
+{
+  uint16_t remain = Size;
+  uint32_t current_addr = StartAddr;
+  uint8_t *ptr = pData;
+
+  while (remain > 0){
+    uint16_t page_offset = current_addr % 256;
+    uint16_t space_in_page = 256 - page_offset;
+    uint16_t write_size = (remain < space_in_page) ? remain : space_in_page;
+
+    W25Q64_WritePage(current_addr, ptr, write_size);
+
+    current_addr += write_size;
+    ptr += write_size;
+    remain -= write_size;
+  }
 }
 /* USER CODE END 4 */
 
