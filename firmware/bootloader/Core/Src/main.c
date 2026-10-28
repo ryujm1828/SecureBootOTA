@@ -138,6 +138,25 @@ void send_response(uint8_t res){
   HAL_UART_Transmit(&huart2, &res, 1, 100);
 }
 
+// Secure memory wipe to prevent compiler dead-store optimization
+static void secure_memzero(void *v, size_t n) {
+  volatile uint8_t *p = (volatile uint8_t *)v;
+  while (n--) {
+    *p++ = 0;
+  }
+}
+
+// Constant-time memory compare to prevent timing side-channel attacks
+static int constant_time_memcmp(const void *a, const void *b, size_t len) {
+  const uint8_t *p1 = (const uint8_t *)a;
+  const uint8_t *p2 = (const uint8_t *)b;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < len; i++) {
+    diff |= (p1[i] ^ p2[i]);
+  }
+  return diff;
+}
+
 /**
  * @brief  Verify the OTA header structure and its fields.
  * @retval 1: Valid, 0: Error
@@ -191,7 +210,8 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
   sha256_update(&sha_ctx, (const uint8_t *)app_address, hdr->image_size);
   sha256_final(&sha_ctx, app_hash);
 
-  if (memcmp(app_hash, hdr->payload_sha256, 32) != 0) {
+  // Constant-time compare for payload hash
+  if (constant_time_memcmp(app_hash, hdr->payload_sha256, 32) != 0) {
     printf("[SECURITY] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
     return 0;
   }
@@ -247,7 +267,8 @@ int verify_staging_firmware(uint32_t ext_header_address){
   }
   sha256_final(&sha_ctx, app_hash);
 
-  if(memcmp(app_hash, hdr.payload_sha256, 32) != 0) {
+  // Constant-time compare for payload hash
+  if (constant_time_memcmp(app_hash, hdr.payload_sha256, 32) != 0) {
     printf("[OTA ERROR] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
     return 0;
   }
@@ -277,8 +298,7 @@ void jump_to_application(uint32_t app_address) {
 
   uint32_t jump_address = *(__IO uint32_t *)(app_address + 4);
   void (*app_reset_handler)(void) = (void (*)(void))jump_address;
-
-  __enable_irq();
+  SCB->VTOR = app_address;
   __set_MSP(*(__IO uint32_t *)app_address);
   app_reset_handler();
 }
@@ -383,8 +403,18 @@ int decrypt_ota_package(uint32_t enc_addr, uint32_t dec_addr, uint32_t total_enc
     calculated_mac[i] = y[i] ^ s0[i];
   }
 
+  // Constant-time MAC comparison
+  int mac_match = (constant_time_memcmp(calculated_mac, rx_mac, 16) == 0);
+
+  // Clear sensitive keys and cipher states from RAM
+  secure_memzero(round_keys, sizeof(round_keys));
+  secure_memzero(s0, sizeof(s0));
+  secure_memzero(y, sizeof(y));
+  secure_memzero(ctr, sizeof(ctr));
+  secure_memzero(calculated_mac, sizeof(calculated_mac));
+
   // Verify MAC authentication tag
-  if (memcmp(calculated_mac, rx_mac, 16) != 0) {
+  if (!mac_match) {
     printf("[SECURITY] AES-CCM MAC Verification Failed! Tag mismatch.\r\n");
     return 0;
   }
@@ -560,7 +590,13 @@ void wait_for_ota_package(void){
                   device_aes_key, 32);
 
       // Decrypt staging package, verify it, and install to internal flash
-      if (decrypt_and_install_firmware(EXT_FLASH_ENC_ADDR, EXT_FLASH_DEC_ADDR, total_received, device_aes_key)) {
+      int update_ok = decrypt_and_install_firmware(EXT_FLASH_ENC_ADDR, EXT_FLASH_DEC_ADDR, total_received, device_aes_key);
+
+      // Wipe derived device key and UID from RAM
+      secure_memzero(device_aes_key, sizeof(device_aes_key));
+      secure_memzero(device_uid, sizeof(device_uid));
+
+      if (update_ok) {
         send_response(ACK);
         printf("[OTA] Firmware update successful! Jumping to new App...\r\n");
         HAL_Delay(500);

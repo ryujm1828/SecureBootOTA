@@ -67,7 +67,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  SCB->VTOR = 0x08010200; // TestApp 시작 주소로 벡터 테이블 재배치
+  SCB->VTOR = 0x08010200; // Set vector table offset to the application start address (0x08010200)
+  __enable_irq();         // Enable interrupts
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
