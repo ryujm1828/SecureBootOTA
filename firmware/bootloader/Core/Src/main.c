@@ -195,9 +195,6 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
     printf("[SECURITY] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
     return 0;
   }
-
-  printf("[SECURITY] Verification Success! (Version: %lu, Size: %lu bytes)\r\n", 
-         (unsigned long)hdr->image_version, (unsigned long)hdr->image_size);
   return 1;
 }
 

@@ -5,7 +5,7 @@ from Crypto.Protocol.KDF import HKDF
 from Crypto.Hash import SHA256
 
 # Master Key (32 bytes for AES-256)
-MASTER_KEY = b"SecretCompanyMasterKey0123456789"  // 32bytes (256 bits)
+MASTER_KEY = b"SecretCompanyMasterKey0123456789"  
 
 # UID of the target device (12 bytes for example)
 # EX: 0x00112233445566778899AABB
