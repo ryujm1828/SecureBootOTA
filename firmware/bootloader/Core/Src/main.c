@@ -94,6 +94,8 @@ int _write(int file, char *ptr, int len)
     HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 1000);
     return len;
 }
+#define SEC_TRUE   0x5A5A5A5AU
+#define SEC_FALSE  0xA5A5A5A5U
 
 #define HEADER_START_ADDRESS 0x08010000
 #define APP_START_ADDRESS    0x08010200
@@ -199,8 +201,14 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
   sha256_init(&sha_ctx);
   sha256_update(&sha_ctx, (const uint8_t *)header_address, 56);
   sha256_final(&sha_ctx, header_hash);
-
-  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr->signature, uECC_secp256r1()) != 1) {
+  uint32_t sig_status = SEC_FALSE;
+  uint32_t flow_token = 0;
+  
+  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr->signature, uECC_secp256r1()) == 1) {
+    sig_status = SEC_TRUE;
+    flow_token += 0x11111111;
+  }
+  else{
     printf("[SECURITY] ECDSA Signature Mismatch! Firmware Rejected.\r\n");
     return 0;
   }
@@ -211,11 +219,25 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address) {
   sha256_final(&sha_ctx, app_hash);
 
   // Constant-time compare for payload hash
-  if (constant_time_memcmp(app_hash, hdr->payload_sha256, 32) != 0) {
+  if (constant_time_memcmp(app_hash, hdr->payload_sha256, 32) == 0) {
+    flow_token += 0x22222222;
+  }
+  else{
     printf("[SECURITY] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
     return 0;
   }
-  return 1;
+  if (sig_status == SEC_TRUE && flow_token == 0x33333333) {
+    if (sig_status != SEC_FALSE) {
+      printf("[SECURITY] Firmware verification successful! flow_token: 0x%08lX\r\n", (unsigned long)flow_token);
+      return 1;
+    }
+  }
+  else{
+    printf("[SECURITY] Firmware verification failed! flow_token: 0x%08lX\r\n", (unsigned long)flow_token);
+    return 0;
+  }
+  while(1) { __disable_irq(); }
+  return 0;
 }
 
 int verify_staging_firmware(uint32_t ext_header_address){
@@ -245,8 +267,14 @@ int verify_staging_firmware(uint32_t ext_header_address){
   sha256_init(&sha_ctx);
   sha256_update(&sha_ctx, (const uint8_t *)&hdr, 56);
   sha256_final(&sha_ctx, header_hash);
+  uint32_t sig_status = SEC_FALSE;
+  uint32_t flow_token = 0;
 
-  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr.signature, uECC_secp256r1()) != 1) {
+  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr.signature, uECC_secp256r1()) == 1) {
+    sig_status = SEC_TRUE;
+    flow_token += 0x11111111;
+  }
+  else{
     printf("[OTA ERROR] ECDSA Signature Mismatch in OTA header! Firmware Rejected.\r\n");
     return 0;
   }
@@ -268,12 +296,27 @@ int verify_staging_firmware(uint32_t ext_header_address){
   sha256_final(&sha_ctx, app_hash);
 
   // Constant-time compare for payload hash
-  if (constant_time_memcmp(app_hash, hdr.payload_sha256, 32) != 0) {
+  if (constant_time_memcmp(app_hash, hdr.payload_sha256, 32) == 0) {
+    flow_token += 0x22222222;
+  }
+  else{
     printf("[OTA ERROR] App SHA-256 Hash Mismatch! Firmware Rejected.\r\n");
     return 0;
   }
 
-  return 1;
+  if (sig_status == SEC_TRUE && flow_token == 0x33333333) {
+    if (sig_status != SEC_FALSE) {
+        return 1;
+    }
+  }
+  else{
+    printf("[OTA ERROR] Staging firmware verification failed! flow_token: 0x%08lX\r\n", (unsigned long)flow_token);
+    return 0;
+  }
+  
+  while(1) { __disable_irq(); }
+  
+  return 0;
 }
 
 /**
