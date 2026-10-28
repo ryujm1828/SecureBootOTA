@@ -75,10 +75,10 @@ static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 void W25Q64_WaitForWriteEnd(void);
 void W25Q64_WriteEnable(void);
-void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t Size);
+void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t read_size);
 void W25Q64_EraseSector(uint32_t SectorAddr);
-void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size);
-void W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t Size);
+void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t write_size);
+void W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t write_size);
 int decrypt_ota_package(uint32_t enc_addr, uint32_t dec_addr, uint32_t total_enc_len, const uint8_t key[32]);
 int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t enc_size, const uint8_t key[32]);
 /* USER CODE END PFP */
@@ -841,7 +841,7 @@ void W25Q64_WriteEnable(void)
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
 }
 
-void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t Size)
+void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t read_size)
 {
   uint8_t cmd[4];
   cmd[0] = 0x03; // Read Data
@@ -851,7 +851,7 @@ void W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t Size)
 
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
   HAL_SPI_Transmit(&hspi1, cmd, 4, 100);
-  HAL_SPI_Receive(&hspi1, pData, Size, 1000);
+  HAL_SPI_Receive(&hspi1, pData, read_size, 1000);
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
 }
 
@@ -872,9 +872,9 @@ void W25Q64_EraseSector(uint32_t SectorAddr)
   W25Q64_WaitForWriteEnd();
 }
 
-void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size)
+void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t write_size)
 {
-  if (Size > 256) return; // Max page size is 256 bytes
+  if (write_size > 256) return; // Max page size is 256 bytes
 
   W25Q64_WriteEnable();
 
@@ -886,15 +886,15 @@ void W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t Size)
 
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
   HAL_SPI_Transmit(&hspi1, cmd, 4, 100);
-  HAL_SPI_Transmit(&hspi1, pData, Size, 1000);
+  HAL_SPI_Transmit(&hspi1, pData, write_size, 1000);
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
 
   W25Q64_WaitForWriteEnd();
 }
 
-void W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t Size)
+void W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t write_size)
 {
-  uint16_t remain = Size;
+  uint16_t remain = write_size;
   uint32_t current_addr = StartAddr;
   uint8_t *ptr = pData;
 
