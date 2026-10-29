@@ -52,6 +52,7 @@ TouchGFX/simulator/msvs/.vs
 
 # Key files
 *.pem
+!test_privkey.pem
 
 # OTA files
 *.ota
