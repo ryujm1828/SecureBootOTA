@@ -233,7 +233,12 @@ void bootloader_run(void)
   // Enter OTA mode if the user button (B1) is pressed during boot
   if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET) {
     printf("[BOOT] User Button (B1) pressed! Entering OTA Mode...\r\n");
-    wait_for_ota_package();
+    int ota_status = wait_for_ota_package();
+    if (ota_status == OTA_STATUS_TIMEOUT) {
+      printf("[BOOT] OTA timeout (no update). Falling back to boot existing App...\r\n");
+    } else {
+      printf("[BOOT] OTA session ended (status: %d). Checking existing App...\r\n", ota_status);
+    }
   }
   
   // Verify the stored firmware (header and app binary)
@@ -243,12 +248,17 @@ void bootloader_run(void)
       jump_to_application(APP_START_ADDRESS);
     } else {
       printf("BOOT ERROR: Invalid MSP address. Entering RECOVERY mode.\r\n");
-      printf("Waiting for new OTA package...\r\n");
-      wait_for_ota_package();
+      while (1) {
+        printf("Waiting for new OTA package...\r\n");
+        wait_for_ota_package();
+      }
     }
   } else {
     printf("No valid/verified App found. Entering RECOVERY mode.\r\n");
-    wait_for_ota_package();
+    while (1) {
+      printf("Waiting for new OTA package...\r\n");
+      wait_for_ota_package();
+    }
   }
 }
 

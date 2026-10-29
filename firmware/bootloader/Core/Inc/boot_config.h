@@ -63,6 +63,19 @@ extern "C" {
 #define NAK         0x15
 
 /* ========================================================================== */
+/* OTA Timeout Settings (in milliseconds)                                     */
+/* ========================================================================== */
+#define OTA_WAIT_TIMEOUT_MS    30000U // 30 seconds wait for CMD_BEGIN
+#define OTA_PACKET_TIMEOUT_MS  10000U // 10 seconds timeout between packets
+
+/* ========================================================================== */
+/* OTA Status Return Codes                                                    */
+/* ========================================================================== */
+#define OTA_STATUS_OK          0
+#define OTA_STATUS_TIMEOUT    -1
+#define OTA_STATUS_ERROR      -2
+
+/* ========================================================================== */
 /* Cryptographic Keys & Lengths (Definitions in boot_keys.c)                  */
 /* ========================================================================== */
 #define MASTER_KEY_LEN 32

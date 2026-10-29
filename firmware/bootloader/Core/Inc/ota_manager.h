@@ -43,8 +43,9 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
 
 /**
  * @brief  Wait for and receive OTA update package from UART, then decrypt, verify, and install.
+ * @retval OTA_STATUS_OK on success, OTA_STATUS_TIMEOUT on timeout, OTA_STATUS_ERROR on failure.
  */
-void wait_for_ota_package(void);
+int wait_for_ota_package(void);
 
 #ifdef __cplusplus
 }

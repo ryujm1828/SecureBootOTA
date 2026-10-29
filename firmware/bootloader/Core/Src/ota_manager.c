@@ -213,7 +213,7 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
   return 1;
 }
 
-void wait_for_ota_package(void)
+int wait_for_ota_package(void)
 {
   uint8_t header[8];
   uint8_t payload[256];
@@ -223,11 +223,31 @@ void wait_for_ota_package(void)
   uint32_t total_received = 0;
   static uint32_t ext_flash_addr = EXT_FLASH_ENC_ADDR;
 
-  printf("\r\n Waiting for OTA update from PC...\r\n");
+  uint8_t transfer_started = 0;
+  uint32_t session_start = HAL_GetTick();
+  uint32_t last_activity_tick = session_start;
+
+  printf("\r\n[OTA] Waiting for OTA update from PC (Timeout: 30s)...\r\n");
 
   while (1) {
+    // Check timeout: 30s before CMD_BEGIN, 10s between packets during transfer
+    if (!transfer_started) {
+      if ((HAL_GetTick() - session_start) >= OTA_WAIT_TIMEOUT_MS) {
+        printf("[OTA] Timeout: No CMD_BEGIN received within 30 seconds. Exiting OTA mode...\r\n");
+        return OTA_STATUS_TIMEOUT;
+      }
+    } else {
+      if ((HAL_GetTick() - last_activity_tick) >= OTA_PACKET_TIMEOUT_MS) {
+        printf("[OTA ERROR] Packet reception timeout (10s). Aborting OTA session.\r\n");
+        return OTA_STATUS_ERROR;
+      }
+    }
+
+    // Clear overrun or error flags to ensure reliable reception
+    __HAL_UART_CLEAR_OREFLAG(&huart2);
+
     uint8_t b;
-    if (HAL_UART_Receive(&huart2, &b, 1, 1000) != HAL_OK) continue;
+    if (HAL_UART_Receive(&huart2, &b, 1, 100) != HAL_OK) continue;
     if (b != (FRAME_MAGIC & 0xFF)) continue;
 
     if (HAL_UART_Receive(&huart2, &b, 1, 100) != HAL_OK) continue;
@@ -271,9 +291,12 @@ void wait_for_ota_package(void)
       expected_seq = 0;
       total_received = 0;
       ext_flash_addr = EXT_FLASH_ENC_ADDR;
+      transfer_started = 1;
+      last_activity_tick = HAL_GetTick();
       send_response(ACK);
     }
     else if (cmd == CMD_DATA) {
+      last_activity_tick = HAL_GetTick();
       if (seq == expected_seq) {
         if (seq == 0) {
           // Erase sectors in external flash for incoming encrypted package (up to 448KB)
@@ -291,6 +314,7 @@ void wait_for_ota_package(void)
       }
     }
     else if (cmd == CMD_END) {
+      last_activity_tick = HAL_GetTick();
       uint8_t device_uid[12];
 #if USE_REAL_DEVICE_UID
       // Read 96-bit Unique ID from STM32 factory registers
@@ -320,11 +344,13 @@ void wait_for_ota_package(void)
         printf("[OTA] Firmware update successful! Jumping to new App...\r\n");
         HAL_Delay(500);
         NVIC_SystemReset();
+        return OTA_STATUS_OK;
       } else {
         send_response(NAK);
         printf("[OTA ERROR] Decryption, verification, or installation failed!\r\n");
+        transfer_started = 0;
+        session_start = HAL_GetTick();
       }
     }
   }
 }
-
