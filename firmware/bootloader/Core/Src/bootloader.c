@@ -11,6 +11,7 @@
 #include "ota_manager.h"
 #include "sha256.h"
 #include "uECC.h"
+#include "boot_watchdog.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -216,6 +217,9 @@ void jump_to_application(uint32_t app_address)
  */
 void bootloader_run(void)
 {
+  if (watchdog_was_reset_by_iwdg()) 
+    printf("[WARNING] System rebooted due to IWDG WATCHDOG TIMEOUT!\r\n");
+
   printf("\r\n===========================\r\n");
   printf("Secure Bootloader Started\r\n");
   printf("Checking App at Address: 0x%08lX\r\n", (unsigned long)APP_START_ADDRESS);
@@ -243,6 +247,8 @@ void bootloader_run(void)
   
   // Verify the stored firmware (header and app binary)
   if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+    printf("[BOOT] Starting Watchdog (8 seconds timeout)...\r\n");
+    watchdog_start(8000);
     // Check if the MSP (Main Stack Pointer) value is valid (should be in SRAM range)
     if (((*(__IO uint32_t*)APP_START_ADDRESS) & 0x2FF00000) == 0x20000000) {
       jump_to_application(APP_START_ADDRESS);
