@@ -14,6 +14,7 @@
 #include "boot_watchdog.h"
 #include <stdio.h>
 #include <string.h>
+#include "boot_rollback.h"
 
 /**
  * @brief  Verify the OTA header structure and its fields.
@@ -217,9 +218,8 @@ void jump_to_application(uint32_t app_address)
  */
 void bootloader_run(void)
 {
-  if (watchdog_was_reset_by_iwdg()) 
-    printf("[WARNING] System rebooted due to IWDG WATCHDOG TIMEOUT!\r\n");
-
+  check_and_handle_rollback(); // Check for rollback conditions before proceeding
+  
   printf("\r\n===========================\r\n");
   printf("Secure Bootloader Started\r\n");
   printf("Checking App at Address: 0x%08lX\r\n", (unsigned long)APP_START_ADDRESS);

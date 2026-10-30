@@ -31,7 +31,7 @@ int watchdog_was_reset_by_iwdg(void)
     if (RCC->CSR & RCC_CSR_IWDGRSTF) {
         // Clear the reset flags for future checks
         RCC->CSR |= RCC_CSR_RMVF;
-        return 1;
+        return 1; 
     }
     return 0;
 }

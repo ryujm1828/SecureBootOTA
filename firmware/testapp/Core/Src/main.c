@@ -18,10 +18,10 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
+#include "bsp_watchdog.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +31,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Test Mode Configuration:
+ * 0: Normal mode (feeds watchdog, confirms boot)
+ * 1: Crash mode (no confirm, freezes to trigger 8s watchdog reset and rollback)
+ * 2: Interactive button mode (press B1 to trigger freeze)
+ */
+#define TEST_CRASH_MODE 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,7 +61,12 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+// Retarget printf to UART2
+int _write(int file, char *ptr, int len)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 1000);
+    return len;
+}
 /* USER CODE END 0 */
 
 /**
@@ -90,7 +100,22 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+#if (TEST_CRASH_MODE == 1)
+  printf("\r\n[TESTAPP ERROR] Crash mode active! Simulating hang without confirm...\r\n");
+  // Fast blink 5 times then freeze
+  for (int i = 0; i < 10; i++) {
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+    HAL_Delay(100);
+  }
+  printf("[TESTAPP ERROR] Frozen now! Waiting for watchdog timeout (8s)...\r\n");
+  while (1) {
+    // Intentionally freeze without feeding watchdog -> Triggers IWDG reset & rollback
+  }
+#else
+  // Normal mode: Confirm healthy boot
+  System_Confirm_Firmware();
+  printf("\r\n[TESTAPP] Firmware healthy! Boot confirmed.\r\n");
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -98,9 +123,18 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+#if (TEST_CRASH_MODE == 2)
+    // Press user button (B1) to trigger freeze during runtime
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET) {
+      printf("\r\n[TESTAPP] Button pressed! Simulating freeze (stopping watchdog kick)...\r\n");
+      while (1) {
+        // Freeze: no watchdog kick -> IWDG reset
+      }
+    }
+#endif
     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-	  HAL_Delay(100);
-    IWDG->KR = 0xAAAA;
+    HAL_Delay(100);
+    System_Feed_Watchdog();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */

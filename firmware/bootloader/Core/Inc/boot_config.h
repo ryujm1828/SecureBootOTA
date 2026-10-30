@@ -33,6 +33,8 @@ extern "C" {
 /* ========================================================================== */
 #define EXT_FLASH_ENC_ADDR   0x000000 // Encrypted OTA package received via UART
 #define EXT_FLASH_DEC_ADDR   0x100000 // Decrypted OTA package (1MB offset)
+#define EXT_FLASH_BKUP_ADDR  0x200000 // Backup slot for rollback (1MB offset)
+#define EXT_FLASH_META_ADDR  0x300000 // Boot metadata sector (4KB offset)
 
 /* ========================================================================== */
 /* Expected OTA Header Constants                                              */

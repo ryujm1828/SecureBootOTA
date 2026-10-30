@@ -8,6 +8,7 @@
 #include "ota_manager.h"
 #include "bootloader.h"
 #include "secure_utils.h"
+#include "boot_rollback.h"
 #include "w25q64.h"
 #include "aes.h"
 #include "hkdf.h"
@@ -159,6 +160,9 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
     return 0;
   }
 
+  // Backup current internal flash firmware before overwriting
+  backup_current_firmware();
+
   printf("[BOARD] Decrypted firmware verified! Installing to Internal Flash...\r\n");
 
   // 3. Erase internal flash (Sector 4 ~ 7)
@@ -209,6 +213,11 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
     printf("[OTA ERROR] Verification failed after flashing. Aborting.\r\n");
     return 0;
   }
+
+  boot_meta_t meta;
+  boot_meta_read(&meta);
+  meta.state = BOOT_STATE_TRIAL; // Mark new firmware as TRIAL
+  boot_meta_write(&meta);
 
   return 1;
 }
