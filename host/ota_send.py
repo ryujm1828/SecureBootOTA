@@ -27,7 +27,7 @@ def send_frame(ser, cmd, seq, payload=b""):
     frame = frame_data + struct.pack("<B", checksum)
 
     # Longer timeout for CMD_END due to decryption and flash erase
-    timeout = 15.0 if cmd == CMD_END else 3.0
+    timeout = 35.0 if cmd == CMD_END else 5.0
     retry = 0
 
     while retry < 3:

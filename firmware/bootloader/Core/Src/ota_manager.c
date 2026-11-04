@@ -133,7 +133,8 @@ int decrypt_ota_package(uint32_t enc_addr, uint32_t dec_addr, uint32_t total_enc
 
   // Verify MAC authentication tag
   if (!mac_match) {
-    printf("[SECURITY] AES-CCM MAC Verification Failed! Tag mismatch.\r\n");
+    for (uint32_t i = 0; i < sectors_needed; i++)
+        W25Q64_EraseSector(dec_addr + i * 0x1000);
     return 0;
   }
 
@@ -170,21 +171,39 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
   uint32_t SectorError;
   EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
   EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-  EraseInitStruct.Sector = FLASH_SECTOR_4; // Sector 4 ~ 7 (448KB)
-  EraseInitStruct.NbSectors = 4;
+  ota_header_t hdr;
+  W25Q64_ReadData(dec_addr, (uint8_t *)&hdr, sizeof(ota_header_t));
+  
+  uint32_t total_flash_bytes = 0x200 + hdr.image_size;
+  
+  uint32_t sectors_to_erase = 1;
+  if (total_flash_bytes > 0x10000) {     
+    sectors_to_erase = 2;
+  }
+  if (total_flash_bytes > (0x10000 + 0x20000)) {
+    sectors_to_erase = 3;
+  }
+  if (total_flash_bytes > (0x10000 + 0x40000)) {
+    sectors_to_erase = 4;
+  }
+  EraseInitStruct.Sector = FLASH_SECTOR_4;
+  EraseInitStruct.NbSectors = sectors_to_erase;
   if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
     HAL_FLASH_Lock();
     printf("[OTA ERROR] Internal flash erase failed!\r\n");
     return 0;
   }
 
-  ota_header_t hdr;
-  W25Q64_ReadData(dec_addr, (uint8_t *)&hdr, sizeof(ota_header_t));
-
   // 4. Copy Header to HEADER_START_ADDRESS (0x08010000)
   uint8_t *header_ptr = (uint8_t *)&hdr;
-  for (uint32_t i = 0; i < sizeof(ota_header_t); i++) {
-    HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, HEADER_START_ADDRESS + i, header_ptr[i]);
+  for (uint32_t i = 0; i < sizeof(ota_header_t); i += 4) {
+    uint32_t word_val = *(uint32_t *)&header_ptr[i];
+    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, HEADER_START_ADDRESS + i, word_val) != HAL_OK) {
+      HAL_FLASH_Lock();
+      printf("[OTA ERROR] Flash write failed at Header address 0x%08lX\r\n", 
+             (unsigned long)(HEADER_START_ADDRESS + i));
+      return 0;
+    }
   }
 
   // 5. Copy App Binary to APP_START_ADDRESS (0x08010200)
@@ -194,10 +213,18 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
   uint8_t buffer[256];
 
   while (remaining > 0) {
-    uint16_t read_size = (remaining > sizeof(buffer)) ? sizeof(buffer) : remaining;
+    uint16_t read_size = (remaining > sizeof(buffer)) ? sizeof(buffer) : (uint16_t)remaining;
     W25Q64_ReadData(src_app_addr, buffer, read_size);
-    for (uint16_t i = 0; i < read_size; i++) {
-      HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, dest_addr++, buffer[i]);
+    for (uint16_t i = 0; i < read_size; i += 4) {
+      uint32_t word_val = 0xFFFFFFFF;
+      uint16_t copy_bytes = (read_size - i >= 4) ? 4 : (read_size - i);
+      memcpy(&word_val, &buffer[i], copy_bytes);
+      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, dest_addr, word_val) != HAL_OK) {
+        HAL_FLASH_Lock();
+        printf("[OTA ERROR] Flash write failed at App address 0x%08lX\r\n", (unsigned long)dest_addr);
+        return 0;
+      }
+      dest_addr += 4;
     }
     src_app_addr += read_size;
     remaining -= read_size;
@@ -219,13 +246,14 @@ int wait_for_ota_package(void)
   uint8_t payload[256];
   uint8_t checksum;
 
-  uint16_t expected_seq = 0;
+  uint32_t expected_seq = 0;
   uint32_t total_received = 0;
-  static uint32_t ext_flash_addr = EXT_FLASH_ENC_ADDR;
+  uint32_t ext_flash_addr = EXT_FLASH_ENC_ADDR;
 
   uint8_t transfer_started = 0;
   uint32_t session_start = HAL_GetTick();
   uint32_t last_activity_tick = session_start;
+  uint32_t expected_total_size = 0;
 
   printf("\r\n[OTA] Waiting for OTA update from PC (Timeout: 30s)...\r\n");
 
@@ -263,7 +291,12 @@ int wait_for_ota_package(void)
     uint16_t length = header[6] | (header[7] << 8);
     (void)version;
 
-    if (length > 0 && length <= 256) {
+    if (length > sizeof(payload)) {
+      send_response(NAK);
+      continue;
+    }
+
+    if (length > 0) {
       if (HAL_UART_Receive(&huart2, payload, length, 1000) != HAL_OK) {
         send_response(NAK);
         continue;
@@ -278,7 +311,6 @@ int wait_for_ota_package(void)
     uint8_t calculated_checksum = 0;
     for (int i = 0; i < 8; i++) calculated_checksum += header[i];
     for (int i = 0; i < length; i++) calculated_checksum += payload[i];
-
     if (calculated_checksum != checksum) {
       send_response(NAK);
       continue;
@@ -288,6 +320,22 @@ int wait_for_ota_package(void)
       send_response(ACK);
     }
     else if (cmd == CMD_BEGIN) {
+      if (length < 4) {
+        send_response(NAK);
+        continue;
+      }
+      expected_total_size = (uint32_t)payload[0] |
+                          ((uint32_t)payload[1] << 8) |
+                          ((uint32_t)payload[2] << 16) |
+                          ((uint32_t)payload[3] << 24);
+      uint32_t max_allowed_pkg = 28 + sizeof(ota_header_t) + MAX_APP_BINARY_SIZE;
+      if (expected_total_size <= 28 || expected_total_size > max_allowed_pkg) {
+        printf("[OTA ERROR] Invalid package size: %lu bytes (Max: %lu)\r\n", 
+              (unsigned long)expected_total_size, (unsigned long)max_allowed_pkg);
+        send_response(NAK);
+        continue;
+      }
+      
       expected_seq = 0;
       total_received = 0;
       ext_flash_addr = EXT_FLASH_ENC_ADDR;
@@ -297,24 +345,43 @@ int wait_for_ota_package(void)
     }
     else if (cmd == CMD_DATA) {
       last_activity_tick = HAL_GetTick();
-      if (seq == expected_seq) {
-        if (seq == 0) {
-          // Erase sectors in external flash for incoming encrypted package (up to 448KB)
-          for (int i = 0; i < 32; i++) {
-            W25Q64_EraseSector(EXT_FLASH_ENC_ADDR + i * 0x1000);
+      //Erase sector if starting a new 4KB block
+      if (transfer_started && seq == expected_seq) {
+
+        if ((ext_flash_addr % 0x1000) == 0) {
+          if (!W25Q64_EraseSector(ext_flash_addr)) {
+            printf("[OTA ERROR] External Flash erase failed at 0x%08lX\r\n", (unsigned long)ext_flash_addr);
+            send_response(NAK);
+            continue;
           }
         }
-        W25Q64_WriteStream(ext_flash_addr, payload, length);
+
+        if (!W25Q64_WriteStream(ext_flash_addr, payload, length)) {
+          printf("[OTA ERROR] External Flash write failed at 0x%08lX\r\n", (unsigned long)ext_flash_addr);
+          send_response(NAK);
+          continue;
+        }
         ext_flash_addr += length;
         total_received += length;
         expected_seq++;
         send_response(ACK);
-      } else {
+    } else if(transfer_started && seq == (expected_seq - 1)) {
+        send_response(ACK);
+      } 
+      else {
         send_response(NAK);
-      }
+      } 
     }
     else if (cmd == CMD_END) {
       last_activity_tick = HAL_GetTick();
+      if (expected_total_size != 0 && total_received != expected_total_size) {
+        printf("[OTA ERROR] Package size mismatch! Expected: %lu, Received: %lu\r\n",
+              (unsigned long)expected_total_size, (unsigned long)total_received);
+        send_response(NAK);
+        transfer_started = 0;
+        session_start = HAL_GetTick();
+        continue;
+      }
       uint8_t device_uid[12];
 #if USE_REAL_DEVICE_UID
       // Read 96-bit Unique ID from STM32 factory registers
@@ -342,8 +409,7 @@ int wait_for_ota_package(void)
       if (update_ok) {
         send_response(ACK);
         printf("[OTA] Firmware update successful! Jumping to new App...\r\n");
-        HAL_Delay(500);
-        NVIC_SystemReset();
+        HAL_Delay(100);
         return OTA_STATUS_OK;
       } else {
         send_response(NAK);

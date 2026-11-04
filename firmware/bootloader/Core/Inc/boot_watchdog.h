@@ -4,28 +4,19 @@
 #include "stm32f4xx.h"
 #include <stdint.h>
 
-/* IWDG 키 레지스터 값 */
-#define IWDG_KEY_RELOAD    0xAAAAU  // Reload the watchdog counter
-#define IWDG_KEY_ENABLE    0xCCCCU  // Start the watchdog
-#define IWDG_KEY_WRITE_EN  0x5555U  // Enable write access to IWDG_PR and IWDG_RLR registers
+#define IWDG_KEY_RELOAD    0xAAAAU
+#define IWDG_KEY_ENABLE    0xCCCCU
+#define IWDG_KEY_WRITE_EN  0x5555U
 
-/**
- * @brief  IWDG watchdog start
- * @param  timeout_ms: Timeout time
- */
 void watchdog_start(uint32_t timeout_ms);
 
-/**
- * @brief  IWDG watchdog refresh (kick/feed) to prevent reset
- */
 static inline void watchdog_refresh(void) {
     IWDG->KR = IWDG_KEY_RELOAD;
 }
 
-/**
- * @brief  Check if the last reset was caused by the Independent Watchdog (IWDG)
- * @retval 1: IWDG Reset, 0: Not IWDG Reset
- */
 int watchdog_was_reset_by_iwdg(void);
+uint32_t watchdog_get_boot_fail_count(void);
+void watchdog_set_boot_fail_count(uint32_t count);
+void watchdog_clear_boot_fail_count(void);
 
-#endif /* __BOOT_WATCHDOG_H */
+#endif

@@ -1,37 +1,53 @@
 #include "boot_watchdog.h"
+#include "stm32f4xx_hal.h"
+
+#define BOOT_BKP_MAGIC 0xB0070000U
 
 void watchdog_start(uint32_t timeout_ms)
 {
-    // LSI Clock = 32 kHz
-    // Prescaler 256 : 1 Count = 256 / 32000 = 8ms
     uint32_t reload = (timeout_ms / 8);
     if (reload > 0xFFF) {
-        reload = 0xFFF; // 12-bit 최대값 (4095)
+        reload = 0xFFF;
     }
 
-    // Enable write access to IWDG_PR and IWDG_RLR registers
     IWDG->KR = IWDG_KEY_WRITE_EN;
-
-    // Set prescaler to 256 (IWDG_PR = 0x06)
     IWDG->PR = 0x06;
-
-    // Set reload value
     IWDG->RLR = (uint16_t)reload;
-
-    // Load the IWDG counter with the reload value (kick/feed)
+    while (IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU));
     IWDG->KR = IWDG_KEY_RELOAD;
-
-    // Start the IWDG
     IWDG->KR = IWDG_KEY_ENABLE;
 }
 
 int watchdog_was_reset_by_iwdg(void)
 {
-    // Check if the Independent Watchdog Reset Flag is set
     if (RCC->CSR & RCC_CSR_IWDGRSTF) {
-        // Clear the reset flags for future checks
         RCC->CSR |= RCC_CSR_RMVF;
         return 1;
     }
     return 0;
+}
+
+uint32_t watchdog_get_boot_fail_count(void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    PWR->CR |= PWR_CR_DBP;
+    uint32_t val = RTC->BKP0R;
+    if ((val & 0xFFFF0000U) == BOOT_BKP_MAGIC) {
+        return (val & 0x0000FFFFU);
+    }
+    return 0;
+}
+
+void watchdog_set_boot_fail_count(uint32_t count)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    PWR->CR |= PWR_CR_DBP;
+    RTC->BKP0R = BOOT_BKP_MAGIC | (count & 0x0000FFFFU);
+}
+
+void watchdog_clear_boot_fail_count(void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    PWR->CR |= PWR_CR_DBP;
+    RTC->BKP0R = BOOT_BKP_MAGIC;
 }

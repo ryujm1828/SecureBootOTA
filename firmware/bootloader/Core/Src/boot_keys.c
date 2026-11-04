@@ -15,6 +15,9 @@ const uint8_t ecdsa_public_key[64] = {
     0x68, 0x25, 0xa8, 0xdb, 0x58, 0x9f, 0x2d, 0xb3, 0x9d, 0x39, 0x57, 0xb7, 0x68, 0x37, 0x14, 0x6f
 };
 
-const uint8_t MASTER_KEY[33] = "SecretCompanyMasterKey0123456789";
-const uint8_t OTA_SALT[9] = "OTA_SALT";
-
+const uint8_t MASTER_KEY[MASTER_KEY_LEN] = {
+    'S','e','c','r','e','t','C','o','m','p','a','n','y',
+    'M','a','s','t','e','r','K','e','y',
+    '0','1','2','3','4','5','6','7','8','9'
+}; /* Explicit bytes: no null terminator. Must match boot_config.h MASTER_KEY_LEN=32. */
+const uint8_t OTA_SALT[OTA_SALT_LEN] = {'O','T','A','_','S','A','L','T'};
