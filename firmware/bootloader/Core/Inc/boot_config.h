@@ -33,6 +33,7 @@ extern "C" {
 /* ========================================================================== */
 #define EXT_FLASH_ENC_ADDR   0x000000 // Encrypted OTA package received via UART
 #define EXT_FLASH_DEC_ADDR   0x100000 // Decrypted OTA package (1MB offset)
+#define EXT_FLASH_SIZE  0x800000U
 
 /* ========================================================================== */
 /* Expected OTA Header Constants                                              */
@@ -82,8 +83,8 @@ extern "C" {
 #define OTA_SALT_LEN   8
 
 extern const uint8_t ecdsa_public_key[64];
-extern const uint8_t MASTER_KEY[33];
-extern const uint8_t OTA_SALT[9];
+extern const uint8_t MASTER_KEY[MASTER_KEY_LEN];
+extern const uint8_t OTA_SALT[OTA_SALT_LEN];
 
 #ifdef __cplusplus
 }

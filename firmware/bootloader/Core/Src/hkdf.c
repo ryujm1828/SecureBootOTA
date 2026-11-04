@@ -113,4 +113,6 @@ void hkdf_sha256(const uint8_t *salt, size_t salt_len,
     generated += to_copy;
     counter++;
   }
+  secure_memzero(prk, sizeof(prk));
+  secure_memzero(t, sizeof(t));
 }

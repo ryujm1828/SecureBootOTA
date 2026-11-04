@@ -18,5 +18,6 @@ int watchdog_was_reset_by_iwdg(void);
 uint32_t watchdog_get_boot_fail_count(void);
 void watchdog_set_boot_fail_count(uint32_t count);
 void watchdog_clear_boot_fail_count(void);
+void watchdog_clear_reset_flags(void);
 
 #endif

@@ -44,7 +44,7 @@ static void read_internal_memory(uint32_t src_addr, uint8_t *dst, uint32_t len)
 
 static void read_external_flash(uint32_t src_addr, uint8_t *dst, uint32_t len)
 {
-  W25Q64_ReadData(src_addr, dst, (uint16_t)len);
+  W25Q64_ReadData(src_addr, dst, len);
 }
 
 static int verify_firmware_common(uint32_t header_address, uint32_t app_address, firmware_read_fn read_fn, int check_rollback)
@@ -63,11 +63,20 @@ static int verify_firmware_common(uint32_t header_address, uint32_t app_address,
 
   if (read_fn == read_internal_memory) {
     if (app_address < APP_START_ADDRESS || 
-        (app_address + hdr.image_size) > (HEADER_START_ADDRESS + 0x70000) || 
+        (app_address + hdr.image_size) > (APP_START_ADDRESS + MAX_APP_BINARY_SIZE) || 
         (app_address + hdr.image_size) < app_address) {
       printf("[SECURITY] App address range error: 0x%08lX + %lu\r\n", 
              (unsigned long)app_address, (unsigned long)hdr.image_size);
       return 0;
+    }
+  } else{
+    // Check external memory
+    if (app_address >= EXT_FLASH_SIZE ||
+        (app_address + hdr.image_size) > EXT_FLASH_SIZE ||
+        (app_address + hdr.image_size) < app_address) {
+        printf("[SECURITY] Ext flash address range error: 0x%08lX + %lu\r\n",
+               (unsigned long)app_address, (unsigned long)hdr.image_size);
+        return 0;
     }
   }
 
@@ -136,7 +145,7 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address)
   uint32_t msp_val = *(__IO uint32_t *)app_address;
   uint32_t reset_handler = *(__IO uint32_t *)(app_address + 4);
   // Check that MSP is in SRAM range (0x20000000 - 0x200FFFFF) and Reset Handler is odd (Thumb mode)
-  if (((msp_val & 0x2FF00000) != 0x20000000) || ((reset_handler & 1) == 0)) {
+  if (((msp_val & 0xFFF00000) != 0x20000000) || ((reset_handler & 1) == 0)) {
     printf("[SECURITY] Invalid MSP (0x%08lX) or Reset Handler (0x%08lX)!\r\n", 
            (unsigned long)msp_val, (unsigned long)reset_handler);
     return 0;
@@ -208,8 +217,9 @@ static void enter_recovery_mode(const char *reason)
 void bootloader_run(void)
 {
   int bootloop_detected = 0;
+  int was_iwdg_reset = watchdog_was_reset_by_iwdg();
 
-  if (watchdog_was_reset_by_iwdg()) {
+  if (was_iwdg_reset) {
     uint32_t fail_count = watchdog_get_boot_fail_count() + 1;
     watchdog_set_boot_fail_count(fail_count);
     printf("[WARNING] System rebooted due to IWDG WATCHDOG TIMEOUT! (Fail count: %lu)\r\n", (unsigned long)fail_count);
@@ -220,6 +230,8 @@ void bootloader_run(void)
   } else {
     watchdog_clear_boot_fail_count();
   }
+
+  watchdog_clear_reset_flags();
 
   printf("\r\n===========================\r\n");
   printf("Secure Bootloader Started\r\n");

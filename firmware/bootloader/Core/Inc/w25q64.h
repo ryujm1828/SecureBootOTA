@@ -16,7 +16,7 @@ extern "C" {
 
 int W25Q64_WaitForWriteEnd(void);
 int W25Q64_WriteEnable(void);
-int W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint16_t read_size);
+int W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint32_t read_size);
 int W25Q64_EraseSector(uint32_t SectorAddr);
 int W25Q64_WritePage(uint32_t PageAddr, uint8_t *pData, uint16_t write_size);
 int W25Q64_WriteStream(uint32_t StartAddr, uint8_t *pData, uint16_t write_size);

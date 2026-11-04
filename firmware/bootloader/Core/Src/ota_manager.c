@@ -188,6 +188,7 @@ int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t 
   }
   EraseInitStruct.Sector = FLASH_SECTOR_4;
   EraseInitStruct.NbSectors = sectors_to_erase;
+  IWDG->KR = IWDG_KEY_RELOAD;
   if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
     HAL_FLASH_Lock();
     printf("[OTA ERROR] Internal flash erase failed!\r\n");
@@ -258,6 +259,7 @@ int wait_for_ota_package(void)
   printf("\r\n[OTA] Waiting for OTA update from PC (Timeout: 30s)...\r\n");
 
   while (1) {
+    IWDG->KR = IWDG_KEY_RELOAD;
     // Check timeout: 30s before CMD_BEGIN, 10s between packets during transfer
     if (!transfer_started) {
       if ((HAL_GetTick() - session_start) >= OTA_WAIT_TIMEOUT_MS) {
@@ -365,7 +367,7 @@ int wait_for_ota_package(void)
         total_received += length;
         expected_seq++;
         send_response(ACK);
-    } else if(transfer_started && seq == (expected_seq - 1)) {
+    } else if(transfer_started && expected_seq > 0 && seq == (expected_seq - 1)) {
         send_response(ACK);
       } 
       else {
@@ -415,6 +417,8 @@ int wait_for_ota_package(void)
         send_response(NAK);
         printf("[OTA ERROR] Decryption, verification, or installation failed!\r\n");
         transfer_started = 0;
+        expected_seq = 0;
+        total_received = 0;
         session_start = HAL_GetTick();
       }
     }
