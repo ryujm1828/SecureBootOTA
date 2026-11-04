@@ -199,17 +199,96 @@ void jump_to_application(uint32_t app_address)
     while (1);
 }
 
+int install_firmware(uint32_t ext_src_addr)
+{
+  ota_header_t hdr;
+  W25Q64_ReadData(ext_src_addr, (uint8_t *)&hdr, sizeof(ota_header_t));
+
+  // Sector 4: 64KB, Sector 5~7: 128KB
+  uint32_t total_flash_bytes = 0x200 + hdr.image_size;
+  uint32_t sectors_to_erase = 1;
+
+  if (total_flash_bytes > 0x10000)             sectors_to_erase = 2; // > 64KB
+  if (total_flash_bytes > (0x10000 + 0x20000)) sectors_to_erase = 3; // > 192KB
+  if (total_flash_bytes > (0x10000 + 0x40000)) sectors_to_erase = 4; // > 320KB
+
+  //Unlock flash and clear flags
+  HAL_FLASH_Unlock();
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
+                         FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+  IWDG->KR = IWDG_KEY_RELOAD;
+
+  // Erase internal flash sectors
+  FLASH_EraseInitTypeDef EraseInitStruct;
+  uint32_t SectorError;
+  EraseInitStruct.TypeErase    = FLASH_TYPEERASE_SECTORS;
+  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+  EraseInitStruct.Sector       = FLASH_SECTOR_4;
+  EraseInitStruct.NbSectors    = sectors_to_erase;
+  if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
+    HAL_FLASH_Lock();
+    printf("[FLASH] Erase failed! Sector error: %lu\r\n", (unsigned long)SectorError);
+    return 0;
+  }
+  IWDG->KR = IWDG_KEY_RELOAD;
+
+  // Write OTA header to internal flash
+  uint8_t *header_ptr = (uint8_t *)&hdr;
+  for (uint32_t i = 0; i < sizeof(ota_header_t); i += 4) {
+    uint32_t word_val = 0xFFFFFFFF;
+    memcpy(&word_val, &header_ptr[i], 4); // Safe copy avoiding unaligned access
+    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, HEADER_START_ADDRESS + i, word_val) != HAL_OK) {
+      HAL_FLASH_Lock();
+      printf("[FLASH] Header write failed at 0x%08lX\r\n", (unsigned long)(HEADER_START_ADDRESS + i));
+      return 0;
+    }
+  }
+
+  // Write application binary to internal flash
+  uint32_t src_app_addr = ext_src_addr + sizeof(ota_header_t);
+  uint32_t dest_addr    = APP_START_ADDRESS;
+  uint32_t remaining    = hdr.image_size;
+  uint8_t buffer[256];
+  while (remaining > 0) {
+    IWDG->KR = IWDG_KEY_RELOAD; // Keep watchdog alive during write
+    uint16_t read_size = (remaining > sizeof(buffer)) ? sizeof(buffer) : (uint16_t)remaining;
+    W25Q64_ReadData(src_app_addr, buffer, read_size);
+    for (uint16_t i = 0; i < read_size; i += 4) {
+      uint32_t word_val = 0xFFFFFFFF;
+      uint16_t copy_bytes = (read_size - i >= 4) ? 4 : (read_size - i);
+      memcpy(&word_val, &buffer[i], copy_bytes);
+      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, dest_addr, word_val) != HAL_OK) {
+        HAL_FLASH_Lock();
+        printf("[FLASH] App write failed at 0x%08lX\r\n", (unsigned long)dest_addr);
+        return 0;
+      }
+      dest_addr += 4;
+    }
+    src_app_addr += read_size;
+    remaining    -= read_size;
+  }
+  // Lock internal flash
+  HAL_FLASH_Lock();
+  return 1; 
+}
+
 static void enter_recovery_mode(const char *reason)
 {
   printf("[RECOVERY] %s. Waiting for new OTA package...\r\n", reason);
   while (1) {
     int status = wait_for_ota_package();
     if (status == OTA_STATUS_OK) {
-
-      watchdog_clear_boot_fail_count();
-      printf("[RECOVERY] Update installed! Rebooting system...\r\n");
-      HAL_Delay(100);
-      NVIC_SystemReset();
+      if (verify_staging_firmware(EXT_FLASH_DEC_ADDR) &&
+          install_firmware(EXT_FLASH_DEC_ADDR) &&
+          verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+        watchdog_clear_boot_fail_count();
+        printf("[RECOVERY] Update installed! Rebooting system...\r\n");
+        HAL_Delay(100);
+        NVIC_SystemReset();
+      }
+      else {
+        printf("[RECOVERY] Firmware verification/install failed! Waiting again...\r\n");
+      }
     }
   }
 }
@@ -250,10 +329,28 @@ void bootloader_run(void)
     printf("[BOOT] User Button (B1) pressed! Entering OTA Mode...\r\n");
     int ota_status = wait_for_ota_package();
     if (ota_status == OTA_STATUS_OK) {
-      watchdog_clear_boot_fail_count();
-      printf("[BOOT] OTA update successful! Rebooting system...\r\n");
-      HAL_Delay(100);
-      NVIC_SystemReset();
+      if(verify_staging_firmware(EXT_FLASH_DEC_ADDR)){
+        // Add Install new firmware
+        if(install_firmware(EXT_FLASH_DEC_ADDR)){
+          printf("[BOOT] New firmware installed successfully!\r\n");
+          if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+            printf("[BOOT] Update success! Rebooting...\r\n");
+            watchdog_clear_boot_fail_count();
+            HAL_Delay(100);
+            NVIC_SystemReset();
+          }
+          else{
+            printf("[BOOT] Update failed! Staying in bootloader.\r\n");
+            //backup code
+          }
+        }
+        else{
+          printf("[BOOT] Firmware installation failed! Staying in bootloader.\r\n");
+        }
+      }
+      else{
+        printf("[BOOT] OTA package verification failed! Staying in bootloader.\r\n");
+      }
     } else {
       printf("[BOOT] OTA timed out or aborted. Checking existing App...\r\n");
     }

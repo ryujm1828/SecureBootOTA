@@ -11,6 +11,7 @@
 #include "w25q64.h"
 #include "aes.h"
 #include "hkdf.h"
+#include "boot_watchdog.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -140,104 +141,6 @@ int decrypt_ota_package(uint32_t enc_addr, uint32_t dec_addr, uint32_t total_enc
 
   printf("[SECURITY] AES-CCM Decryption and Authentication Successful! (%lu bytes)\r\n",
          (unsigned long)plaintext_len);
-  return 1;
-}
-
-/**
- * @brief  Decrypt staging package, verify firmware, and install to internal flash.
- * @retval 1: Success, 0: Error
- */
-int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t enc_size, const uint8_t key[32])
-{
-  // 1. Decrypt AES-CCM package from enc_addr into dec_addr
-  if (!decrypt_ota_package(enc_addr, dec_addr, enc_size, key)) {
-    return 0;
-  }
-
-  // 2. Verify decrypted staging firmware (Header, Anti-Rollback, Signature, Hash)
-  if (!verify_staging_firmware(dec_addr)) {
-    printf("[OTA ERROR] Decrypted firmware verification failed!\r\n");
-    return 0;
-  }
-
-  printf("[BOARD] Decrypted firmware verified! Installing to Internal Flash...\r\n");
-
-  // 3. Erase internal flash (Sector 4 ~ 7)
-  HAL_FLASH_Unlock();
-  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
-                         FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-
-  FLASH_EraseInitTypeDef EraseInitStruct;
-  uint32_t SectorError;
-  EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
-  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-  ota_header_t hdr;
-  W25Q64_ReadData(dec_addr, (uint8_t *)&hdr, sizeof(ota_header_t));
-  
-  uint32_t total_flash_bytes = 0x200 + hdr.image_size;
-  
-  uint32_t sectors_to_erase = 1;
-  if (total_flash_bytes > 0x10000) {     
-    sectors_to_erase = 2;
-  }
-  if (total_flash_bytes > (0x10000 + 0x20000)) {
-    sectors_to_erase = 3;
-  }
-  if (total_flash_bytes > (0x10000 + 0x40000)) {
-    sectors_to_erase = 4;
-  }
-  EraseInitStruct.Sector = FLASH_SECTOR_4;
-  EraseInitStruct.NbSectors = sectors_to_erase;
-  IWDG->KR = IWDG_KEY_RELOAD;
-  if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
-    HAL_FLASH_Lock();
-    printf("[OTA ERROR] Internal flash erase failed!\r\n");
-    return 0;
-  }
-
-  // 4. Copy Header to HEADER_START_ADDRESS (0x08010000)
-  uint8_t *header_ptr = (uint8_t *)&hdr;
-  for (uint32_t i = 0; i < sizeof(ota_header_t); i += 4) {
-    uint32_t word_val = *(uint32_t *)&header_ptr[i];
-    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, HEADER_START_ADDRESS + i, word_val) != HAL_OK) {
-      HAL_FLASH_Lock();
-      printf("[OTA ERROR] Flash write failed at Header address 0x%08lX\r\n", 
-             (unsigned long)(HEADER_START_ADDRESS + i));
-      return 0;
-    }
-  }
-
-  // 5. Copy App Binary to APP_START_ADDRESS (0x08010200)
-  uint32_t src_app_addr = dec_addr + sizeof(ota_header_t);
-  uint32_t dest_addr = APP_START_ADDRESS;
-  uint32_t remaining = hdr.image_size;
-  uint8_t buffer[256];
-
-  while (remaining > 0) {
-    uint16_t read_size = (remaining > sizeof(buffer)) ? sizeof(buffer) : (uint16_t)remaining;
-    W25Q64_ReadData(src_app_addr, buffer, read_size);
-    for (uint16_t i = 0; i < read_size; i += 4) {
-      uint32_t word_val = 0xFFFFFFFF;
-      uint16_t copy_bytes = (read_size - i >= 4) ? 4 : (read_size - i);
-      memcpy(&word_val, &buffer[i], copy_bytes);
-      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, dest_addr, word_val) != HAL_OK) {
-        HAL_FLASH_Lock();
-        printf("[OTA ERROR] Flash write failed at App address 0x%08lX\r\n", (unsigned long)dest_addr);
-        return 0;
-      }
-      dest_addr += 4;
-    }
-    src_app_addr += read_size;
-    remaining -= read_size;
-  }
-  HAL_FLASH_Lock();
-
-  // 6. Verify installed firmware in internal flash
-  if (!verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
-    printf("[OTA ERROR] Verification failed after flashing. Aborting.\r\n");
-    return 0;
-  }
-
   return 1;
 }
 
@@ -402,15 +305,15 @@ int wait_for_ota_package(void)
                   device_aes_key, 32);
 
       // Decrypt staging package, verify it, and install to internal flash
-      int update_ok = decrypt_and_install_firmware(EXT_FLASH_ENC_ADDR, EXT_FLASH_DEC_ADDR, total_received, device_aes_key);
-
+      int dec_ok = decrypt_ota_package(EXT_FLASH_ENC_ADDR, EXT_FLASH_DEC_ADDR, total_received, device_aes_key);
+      
       // Wipe derived device key and UID from RAM
       secure_memzero(device_aes_key, sizeof(device_aes_key));
       secure_memzero(device_uid, sizeof(device_uid));
 
-      if (update_ok) {
+      if (dec_ok) {
         send_response(ACK);
-        printf("[OTA] Firmware update successful! Jumping to new App...\r\n");
+        printf("[OTA] Firmware package decrypted successfully.\r\n");
         HAL_Delay(100);
         return OTA_STATUS_OK;
       } else {

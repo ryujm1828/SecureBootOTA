@@ -32,16 +32,6 @@ void send_response(uint8_t res);
 int decrypt_ota_package(uint32_t enc_addr, uint32_t dec_addr, uint32_t total_enc_len, const uint8_t key[32]);
 
 /**
- * @brief  Decrypt staging package, verify firmware, and install to internal flash.
- * @param  enc_addr: Address in external flash where encrypted package is stored
- * @param  dec_addr: Address in external flash where decrypted plaintext will be written
- * @param  enc_size: Size of the encrypted package
- * @param  key: 256-bit AES key
- * @retval 1: Success, 0: Error
- */
-int decrypt_and_install_firmware(uint32_t enc_addr, uint32_t dec_addr, uint32_t enc_size, const uint8_t key[32]);
-
-/**
  * @brief  Wait for and receive OTA update package from UART, then decrypt, verify, and install.
  * @retval OTA_STATUS_OK on success, OTA_STATUS_TIMEOUT on timeout, OTA_STATUS_ERROR on failure.
  */

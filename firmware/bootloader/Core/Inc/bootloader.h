@@ -51,6 +51,13 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address);
 int verify_staging_firmware(uint32_t ext_header_address);
 
 /**
+ * @brief  Install firmware from external flash to internal flash.
+ * @param  ext_src_addr: Start address in external flash (Header + Binary)
+ * @retval 1: Success, 0: Error
+ */
+int install_firmware(uint32_t ext_src_addr);
+
+/**
  * @brief  Jump to the application at the specified address.
  * @param  app_address: Start address of the application binary
  */
