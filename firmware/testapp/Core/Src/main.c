@@ -18,7 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
+#include "boot_client.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -95,12 +95,13 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  boot_client_confirm();
   while (1)
   {
     /* USER CODE END WHILE */
     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
 	  HAL_Delay(100);
-    IWDG->KR = 0xAAAA;
+    boot_client_feed_watchdog();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */

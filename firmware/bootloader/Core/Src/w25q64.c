@@ -58,6 +58,8 @@ int W25Q64_ReadData(uint32_t ReadAddr, uint8_t *pData, uint32_t read_size)
   cmd[3] = ReadAddr & 0xFF;
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_RESET);
   HAL_StatusTypeDef res1 = HAL_SPI_Transmit(&hspi1, cmd, 4, 100);
+  
+  if (read_size > 0xFFFF) return 0;
   HAL_StatusTypeDef res2 = HAL_SPI_Receive(&hspi1, pData, (uint16_t)read_size, 1000);
   HAL_GPIO_WritePin(W25Q_CS_GPIO_Port, W25Q_CS_Pin, GPIO_PIN_SET);
   return (res1 == HAL_OK && res2 == HAL_OK) ? 1 : 0;

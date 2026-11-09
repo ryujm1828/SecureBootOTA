@@ -27,12 +27,15 @@ extern "C" {
 #define HEADER_START_ADDRESS 0x08010000
 #define APP_START_ADDRESS    0x08010200
 #define MAX_APP_BINARY_SIZE  (0x70000 - 0x200) // Sector 4~7 (448KB) - Header (512B)
+#define SECTOR4_SIZE 0x10000  // 64KB
+#define SECTOR567_SIZE 0x20000 // 128KB each
 
 /* ========================================================================== */
 /* External Flash (W25Q64) Memory Map                                         */
 /* ========================================================================== */
 #define EXT_FLASH_ENC_ADDR   0x000000 // Encrypted OTA package received via UART
 #define EXT_FLASH_DEC_ADDR   0x100000 // Decrypted OTA package (1MB offset)
+#define EXT_FLASH_BACKUP_ADDR   0x200000 // Backup firmware (2MB offset)
 #define EXT_FLASH_SIZE  0x800000U
 
 /* ========================================================================== */
@@ -68,6 +71,12 @@ extern "C" {
 /* ========================================================================== */
 #define OTA_WAIT_TIMEOUT_MS    30000U // 30 seconds wait for CMD_BEGIN
 #define OTA_PACKET_TIMEOUT_MS  10000U // 10 seconds timeout between packets
+
+/* ========================================================================== */
+/* Boot State Codes                                           */
+/* ========================================================================== */
+#define BOOT_STATE_NORMAL 0xA5A5A5A5
+#define BOOT_STATE_TESTING 0x5A5A5A5A
 
 /* ========================================================================== */
 /* OTA Status Return Codes                                                    */

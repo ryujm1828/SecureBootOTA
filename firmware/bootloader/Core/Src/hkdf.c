@@ -54,6 +54,7 @@ void hmac_sha256(const uint8_t *key, size_t key_len,
   sha256_update(&ctx, opad, HMAC_SHA256_BLOCK_SIZE);
   sha256_update(&ctx, inner_hash, HMAC_SHA256_DIGEST_SIZE);
   sha256_final(&ctx, out);
+  
 }
 
 void hkdf_sha256(const uint8_t *salt, size_t salt_len,
@@ -115,4 +116,8 @@ void hkdf_sha256(const uint8_t *salt, size_t salt_len,
   }
   secure_memzero(prk, sizeof(prk));
   secure_memzero(t, sizeof(t));
+  secure_memzero(k0, sizeof(k0));
+  secure_memzero(ipad, sizeof(ipad));
+  secure_memzero(opad, sizeof(opad));
+  secure_memzero(inner_hash, sizeof(inner_hash));
 }

@@ -69,6 +69,7 @@ int decrypt_ota_package(uint32_t enc_addr, uint32_t dec_addr, uint32_t total_enc
   uint32_t sectors_needed = (plaintext_len + 4095) / 4096;
   for (uint32_t i = 0; i < sectors_needed; i++) {
     W25Q64_EraseSector(dec_addr + i * 0x1000);
+    IWDG->KR = IWDG_KEY_RELOAD;
   }
 
   // Decrypt ciphertext and compute CBC-MAC in 256-byte chunks

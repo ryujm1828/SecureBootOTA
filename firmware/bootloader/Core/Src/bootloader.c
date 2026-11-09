@@ -91,8 +91,9 @@ static int verify_firmware_common(uint32_t header_address, uint32_t app_address,
 
   uint8_t header_hash[32];
   SHA256_CTX sha_ctx;
+  size_t signed_len = offsetof(ota_header_t, signature); 
   sha256_init(&sha_ctx);
-  sha256_update(&sha_ctx, (const uint8_t *)&hdr, 56);
+  sha256_update(&sha_ctx, (const uint8_t *)&hdr, signed_len);
   sha256_final(&sha_ctx, header_hash);
 
   uint32_t sig_status = SEC_FALSE;
@@ -203,14 +204,19 @@ int install_firmware(uint32_t ext_src_addr)
 {
   ota_header_t hdr;
   W25Q64_ReadData(ext_src_addr, (uint8_t *)&hdr, sizeof(ota_header_t));
-
+  if (!validate_ota_header(&hdr)) {
+    return 0;
+  }
+  if (hdr.image_size == 0 || hdr.image_size > MAX_APP_BINARY_SIZE) {
+      return 0;
+  }
   // Sector 4: 64KB, Sector 5~7: 128KB
   uint32_t total_flash_bytes = 0x200 + hdr.image_size;
-  uint32_t sectors_to_erase = 1;
+  uint32_t sectors_to_erase = 1; // Sector 4
 
-  if (total_flash_bytes > 0x10000)             sectors_to_erase = 2; // > 64KB
-  if (total_flash_bytes > (0x10000 + 0x20000)) sectors_to_erase = 3; // > 192KB
-  if (total_flash_bytes > (0x10000 + 0x40000)) sectors_to_erase = 4; // > 320KB
+  if (total_flash_bytes > SECTOR4_SIZE) sectors_to_erase = 2;
+  if (total_flash_bytes > SECTOR4_SIZE + SECTOR567_SIZE) sectors_to_erase = 3;
+  if (total_flash_bytes > SECTOR4_SIZE + 2 * SECTOR567_SIZE) sectors_to_erase = 4;
 
   //Unlock flash and clear flags
   HAL_FLASH_Unlock();
@@ -276,12 +282,14 @@ static void enter_recovery_mode(const char *reason)
 {
   printf("[RECOVERY] %s. Waiting for new OTA package...\r\n", reason);
   while (1) {
+    IWDG->KR = IWDG_KEY_RELOAD;
     int status = wait_for_ota_package();
     if (status == OTA_STATUS_OK) {
       if (verify_staging_firmware(EXT_FLASH_DEC_ADDR) &&
           install_firmware(EXT_FLASH_DEC_ADDR) &&
           verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
         watchdog_clear_boot_fail_count();
+        boot_set_state(BOOT_STATE_TESTING);
         printf("[RECOVERY] Update installed! Rebooting system...\r\n");
         HAL_Delay(100);
         NVIC_SystemReset();
@@ -291,6 +299,77 @@ static void enter_recovery_mode(const char *reason)
       }
     }
   }
+}
+
+int backup_firmware(uint32_t ext_backup_addr){
+  /*
+  0.이미 검증된 상태 => 헤더 매직/크기 검증
+  1.w25q64 메모리 삭제
+  2.앱 읽어오기
+  3.w25q64에 쓰기
+  4.w25q64 검증
+  5.return 하기
+  */
+  
+  //w25q64 메모리 삭제
+  ota_header_t hdr;
+  read_internal_memory(HEADER_START_ADDRESS, (uint8_t *)&hdr, sizeof(ota_header_t));
+  if (!validate_ota_header(&hdr)) {
+    return 0;
+  }
+
+  uint32_t total_bytes = sizeof(ota_header_t) + hdr.image_size;
+  uint32_t sectors_needed = (total_bytes + 4095) / 4096;
+  for (uint32_t i = 0; i < sectors_needed; i++) {
+    IWDG->KR = IWDG_KEY_RELOAD;
+    if (!W25Q64_EraseSector(ext_backup_addr + i * 0x1000))
+      return 0;
+  }
+
+  //앱 읽고 쓰기
+  uint8_t buffer[256];
+  uint32_t dst_addr = ext_backup_addr;
+  uint32_t src_addr = APP_START_ADDRESS;
+  uint32_t read_size = 256;
+  uint32_t remaining = hdr.image_size;
+
+  //헤더 쓰기
+  if(!W25Q64_WriteStream(dst_addr, (uint8_t *)&hdr, sizeof(ota_header_t)))
+      return 0;
+  
+  dst_addr += sizeof(ota_header_t);
+
+  while(remaining > 0){
+    IWDG->KR = IWDG_KEY_RELOAD;
+    if(remaining >= 256)
+      read_size = 256;
+    else
+      read_size = remaining;
+    read_internal_memory(src_addr, buffer, read_size);
+    if(!W25Q64_WriteStream(dst_addr, buffer, read_size))
+      return 0;
+    remaining -= read_size;
+    dst_addr += read_size;
+    src_addr += read_size;
+  }
+  if (!verify_firmware_common(ext_backup_addr, 
+                            ext_backup_addr + sizeof(ota_header_t), 
+                            read_external_flash, 
+                            0)) {
+    return 0;
+  }
+  return 1;
+}
+
+void boot_set_state(uint32_t state){
+  __HAL_RCC_PWR_CLK_ENABLE();
+  PWR->CR |= PWR_CR_DBP;
+  RTC->BKP1R = state;
+  PWR->CR &= ~PWR_CR_DBP;
+ }
+
+uint32_t boot_get_state(void){
+  return RTC->BKP1R;
 }
 
 void bootloader_run(void)
@@ -304,7 +383,21 @@ void bootloader_run(void)
     printf("[WARNING] System rebooted due to IWDG WATCHDOG TIMEOUT! (Fail count: %lu)\r\n", (unsigned long)fail_count);
     if (fail_count >= 3) {
       bootloop_detected = 1;
-      printf("[SECURITY] Bootloop detected! Watchdog failed %lu times consecutively. Entering RECOVERY mode.\r\n", (unsigned long)fail_count);
+      printf("[SECURITY] Bootloop detected! Watchdog failed %lu times consecutively. Rollback firmware.\r\n", (unsigned long)fail_count);
+      if (boot_get_state() == BOOT_STATE_TESTING){
+        if(verify_firmware_common(EXT_FLASH_BACKUP_ADDR, 
+                       EXT_FLASH_BACKUP_ADDR + sizeof(ota_header_t), 
+                       read_external_flash, 
+                       0)){
+                        if(install_firmware(EXT_FLASH_BACKUP_ADDR)){
+                        printf("[BOOT] Rollback complted successfully!\r\n");
+                        boot_set_state(BOOT_STATE_NORMAL);  // 정상 상태로 원복!
+                        watchdog_clear_boot_fail_count();  
+                        HAL_Delay(100);
+                        NVIC_SystemReset();
+          }
+        }
+      }
     }
   } else {
     watchdog_clear_boot_fail_count();
@@ -330,22 +423,56 @@ void bootloader_run(void)
     int ota_status = wait_for_ota_package();
     if (ota_status == OTA_STATUS_OK) {
       if(verify_staging_firmware(EXT_FLASH_DEC_ADDR)){
+        // Backup firmware
+        if(verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)){
+          if(backup_firmware(EXT_FLASH_BACKUP_ADDR)){
+            printf("[BOOT] Backup successfully!\r\n");
+          }
+          else{
+            printf("[BOOT] Backup failed.\r\n");
+            HAL_Delay(100);
+            NVIC_SystemReset();
+          }
+        }
+        
+        
         // Add Install new firmware
         if(install_firmware(EXT_FLASH_DEC_ADDR)){
           printf("[BOOT] New firmware installed successfully!\r\n");
           if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+            boot_set_state(BOOT_STATE_TESTING);
             printf("[BOOT] Update success! Rebooting...\r\n");
             watchdog_clear_boot_fail_count();
             HAL_Delay(100);
             NVIC_SystemReset();
           }
           else{
-            printf("[BOOT] Update failed! Staying in bootloader.\r\n");
-            //backup code
+            printf("[BOOT] Update failed! Roolback previous firmware\r\n");
+            //rollback code
+            if(install_firmware(EXT_FLASH_BACKUP_ADDR)){
+              printf("[BOOT] Rollback complted successfully!\r\n");
+              boot_set_state(BOOT_STATE_NORMAL);
+              watchdog_clear_boot_fail_count();
+              HAL_Delay(100);
+              NVIC_SystemReset();
+            }
           }
         }
         else{
-          printf("[BOOT] Firmware installation failed! Staying in bootloader.\r\n");
+          printf("[BOOT] Update failed! Roolback previous firmware\r\n");
+            //rollback code
+          if(verify_firmware_common(EXT_FLASH_BACKUP_ADDR, 
+            EXT_FLASH_BACKUP_ADDR + sizeof(ota_header_t), 
+            read_external_flash, 
+            0)){
+              if(install_firmware(EXT_FLASH_BACKUP_ADDR)){
+              printf("[BOOT] Rollback complted successfully!\r\n");
+              HAL_Delay(100);
+              watchdog_clear_boot_fail_count();
+              boot_set_state(BOOT_STATE_NORMAL);
+              NVIC_SystemReset();
+            }
+          }
         }
       }
       else{

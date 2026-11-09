@@ -64,10 +64,22 @@ int install_firmware(uint32_t ext_src_addr);
 void jump_to_application(uint32_t app_address);
 
 /**
+ * @brief  Backup firmware to external flash from internal flash.
+ * @param  ext_src_addr: Start address in external flash
+ * @retval 1: Success, 0: Error
+ */
+int backup_firmware(uint32_t ext_backup_addr);
+
+void boot_set_state(uint32_t state);
+
+uint32_t boot_get_state(void);
+
+/**
  * @brief  Main bootloader logic routine:
  *         Checks user button, enters OTA mode if pressed or if firmware invalid,
  *         otherwise verifies and jumps to the application.
  */
+
 void bootloader_run(void);
 
 #ifdef __cplusplus
