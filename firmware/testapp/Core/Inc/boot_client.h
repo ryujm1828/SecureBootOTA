@@ -34,10 +34,3 @@ void boot_client_feed_watchdog(void);
 #endif
 
 #endif /* __BOOT_CLIENT_H */
-
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __BOOT_CLIENT_H */

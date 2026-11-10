@@ -10,6 +10,7 @@
 #include "hkdf.h"
 #include "sha256.h"
 #include <string.h>
+#include "secure_utils.h"
 
 #define HMAC_SHA256_BLOCK_SIZE  64
 #define HMAC_SHA256_DIGEST_SIZE 32
@@ -113,11 +114,13 @@ void hkdf_sha256(const uint8_t *salt, size_t salt_len,
     memcpy(okm + generated, t, to_copy);
     generated += to_copy;
     counter++;
+
+    secure_memzero(k0, sizeof(k0));
+    secure_memzero(ipad, sizeof(ipad));
+    secure_memzero(opad, sizeof(opad));
+    secure_memzero(inner_hash, sizeof(inner_hash));
+    secure_memzero(&ctx, sizeof(ctx));
   }
   secure_memzero(prk, sizeof(prk));
   secure_memzero(t, sizeof(t));
-  secure_memzero(k0, sizeof(k0));
-  secure_memzero(ipad, sizeof(ipad));
-  secure_memzero(opad, sizeof(opad));
-  secure_memzero(inner_hash, sizeof(inner_hash));
 }
