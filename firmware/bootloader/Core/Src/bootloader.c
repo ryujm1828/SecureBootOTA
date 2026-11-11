@@ -5,6 +5,9 @@
 #include "sha256.h"
 #include "uECC.h"
 #include "boot_watchdog.h"
+#include "hkdf.h"
+#include "aes.h"
+#include "sha256.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -154,9 +157,141 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address)
   return 1;
 }
 
-int verify_staging_firmware(uint32_t ext_header_address)
-{
-  return verify_firmware_common(ext_header_address, ext_header_address + sizeof(ota_header_t), read_external_flash, 1);
+int verify_encrypted_staging(uint32_t ext_slot_addr,int check_rollback){
+  // Read Nonce, MAC
+  uint8_t nonce[12];
+  uint8_t rx_mac[16];
+  W25Q64_ReadData(ext_slot_addr, nonce, 12);
+  W25Q64_ReadData(ext_slot_addr + 12, rx_mac, 16);
+  
+  uint8_t device_key[32];
+  derive_device_key(device_key);
+  WORD round_keys[60];
+  aes_key_setup(device_key, round_keys, 256);
+  secure_memzero(device_key, sizeof(device_key));
+
+  uint8_t header_buf[128];
+  W25Q64_ReadData(ext_slot_addr + 28, header_buf, 128);
+  uint8_t ctr[16] = {0x02};
+  memcpy(&ctr[1], nonce, 12);
+  uint8_t si[16];
+
+  //Decrypt
+  for (uint32_t b = 0; b < 8; b++) {
+    uint32_t blk_cnt = b + 1;
+    ctr[13] = (blk_cnt >> 16) & 0xFF;
+    ctr[14] = (blk_cnt >> 8) & 0xFF;
+    ctr[15] = blk_cnt & 0xFF;
+    aes_encrypt(ctr, si, round_keys, 256);
+    for (int i = 0; i < 16; i++) {
+      header_buf[b * 16 + i] ^= si[i];
+    }
+  }
+  ota_header_t hdr;
+  memcpy(&hdr, header_buf, sizeof(ota_header_t));
+
+  if (!validate_ota_header(&hdr)) {
+    printf("[VERIFY ERROR] Invalid OTA Header format!\r\n");
+    secure_memzero(round_keys, sizeof(round_keys));
+    return 0;
+  }
+
+  //Anti rollback
+  if(check_rollback){
+    const ota_header_t *installed_hdr = (const ota_header_t *)HEADER_START_ADDRESS;
+    if (installed_hdr->magic == EXPECTED_MAGIC && hdr.image_version < installed_hdr->image_version) {
+      printf("[VERIFY ERROR] Anti-Rollback: Image version %lu is older than installed %lu!\r\n",
+            (unsigned long)hdr.image_version, (unsigned long)installed_hdr->image_version);
+      secure_memzero(round_keys, sizeof(round_keys));
+      return 0;
+    }  
+  }
+  
+
+  // Verify ECDSA
+  uint8_t header_hash[32];
+  SHA256_CTX sha_ctx;
+  size_t signed_len = offsetof(ota_header_t, signature);
+  sha256_init(&sha_ctx);
+  sha256_update(&sha_ctx, (const uint8_t *)&hdr, signed_len);
+  sha256_final(&sha_ctx, header_hash);
+  if (uECC_verify(ecdsa_public_key, header_hash, 32, hdr.signature, uECC_secp256r1()) != 1) {
+    printf("[VERIFY ERROR] ECDSA Signature Mismatch! Fake firmware.\r\n");
+    secure_memzero(round_keys, sizeof(round_keys));
+    return 0;
+  }
+
+  // Verify AES-CCM & SHA-256
+  uint32_t plaintext_len = sizeof(ota_header_t) + hdr.image_size;
+  uint8_t s0[16], b0[16] = {0x3A}, y[16];
+  memset(ctr, 0, sizeof(ctr));
+  ctr[0] = 0x02;
+  memcpy(&ctr[1], nonce, 12);
+  aes_encrypt(ctr, s0, round_keys, 256);
+  memcpy(&b0[1], nonce, 12);
+  b0[13] = (plaintext_len >> 16) & 0xFF;
+  b0[14] = (plaintext_len >> 8) & 0xFF;
+  b0[15] = plaintext_len & 0xFF;
+  aes_encrypt(b0, y, round_keys, 256);
+  SHA256_CTX app_sha_ctx;
+  sha256_init(&app_sha_ctx);
+  uint32_t remaining = plaintext_len;
+  uint32_t src_addr = ext_slot_addr + 28;
+  uint32_t block_counter = 1;
+  uint32_t processed_plain = 0;
+  uint8_t chunk[256];
+  while (remaining > 0) {
+    IWDG->KR = IWDG_KEY_RELOAD;
+    uint16_t chunk_len = (remaining > sizeof(chunk)) ? sizeof(chunk) : (uint16_t)remaining;
+    W25Q64_ReadData(src_addr, chunk, chunk_len);
+    for (uint16_t offset = 0; offset < chunk_len; offset += 16) {
+      uint16_t blk_len = (chunk_len - offset > 16) ? 16 : (chunk_len - offset);
+      ctr[13] = (block_counter >> 16) & 0xFF;
+      ctr[14] = (block_counter >> 8) & 0xFF;
+      ctr[15] = block_counter & 0xFF;
+      block_counter++;
+      aes_encrypt(ctr, si, round_keys, 256);
+      for (int b = 0; b < blk_len; b++) chunk[offset + b] ^= si[b];
+      // CBC-MAC 
+      uint8_t mac_in[16] = {0};
+      memcpy(mac_in, &chunk[offset], blk_len);
+      for (int b = 0; b < 16; b++) y[b] ^= mac_in[b];
+      aes_encrypt(y, y, round_keys, 256);
+    }
+    //SHA-256 (APP Binary only)
+    if (processed_plain >= sizeof(ota_header_t)) {
+      sha256_update(&app_sha_ctx, chunk, chunk_len);
+    } else if (processed_plain + chunk_len > sizeof(ota_header_t)) {
+      uint16_t app_offset = sizeof(ota_header_t) - processed_plain;
+      sha256_update(&app_sha_ctx, &chunk[app_offset], chunk_len - app_offset);
+    }
+    processed_plain += chunk_len;
+    src_addr += chunk_len;
+    remaining -= chunk_len;
+  }
+
+  // Verify AES-CCM MAC Tag
+  uint8_t calculated_mac[16];
+  for (int i = 0; i < 16; i++) calculated_mac[i] = y[i] ^ s0[i];
+  if (constant_time_memcmp(calculated_mac, rx_mac, 16) != 0) {
+    printf("[VERIFY ERROR] AES-CCM MAC Tag Mismatch! Ciphertext corrupted.\r\n");
+    secure_memzero(round_keys, sizeof(round_keys));
+    return 0;
+  }
+
+  // Verify SHA-256
+  uint8_t calculated_app_hash[32];
+  sha256_final(&app_sha_ctx, calculated_app_hash);
+  if (constant_time_memcmp(calculated_app_hash, hdr.payload_sha256, 32) != 0) {
+    printf("[VERIFY ERROR] Payload SHA-256 Mismatch!\r\n");
+    secure_memzero(round_keys, sizeof(round_keys));
+    return 0;
+  }
+
+  secure_memzero(round_keys, sizeof(round_keys));
+  // Verify Success
+  printf("[VERIFY SUCCESS] All 5 checks passed! (Header, Version, ECDSA, SHA-256, MAC)\r\n");
+  return 1;
 }
 
 void jump_to_application(uint32_t app_address)
@@ -200,82 +335,129 @@ void jump_to_application(uint32_t app_address)
     while (1);
 }
 
-int install_firmware(uint32_t ext_src_addr)
+void derive_device_key(uint8_t key[32])
 {
-  ota_header_t hdr;
-  W25Q64_ReadData(ext_src_addr, (uint8_t *)&hdr, sizeof(ota_header_t));
-  if (!validate_ota_header(&hdr)) {
-    return 0;
-  }
-  if (hdr.image_size == 0 || hdr.image_size > MAX_APP_BINARY_SIZE) {
-      return 0;
-  }
-  // Sector 4: 64KB, Sector 5~7: 128KB
-  uint32_t total_flash_bytes = 0x200 + hdr.image_size;
-  uint32_t sectors_to_erase = 1; // Sector 4
+  uint8_t device_uid[12];
+#if USE_REAL_DEVICE_UID
+  memcpy(device_uid, (const void *)STM32_UID_BASE, 12);
+#else
+  const uint8_t sample_uid[12] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
+  memcpy(device_uid, sample_uid, 12);
+#endif
+  hkdf_sha256(OTA_SALT, OTA_SALT_LEN,
+              MASTER_KEY, MASTER_KEY_LEN,
+              device_uid, 12,
+              key, 32);
+}
 
+int install_firmware(uint32_t ext_slot_addr)
+{
+  // Read Nonce (12B), MAC Tag (16B)
+  uint8_t nonce[12];
+  uint8_t rx_mac[16];
+  W25Q64_ReadData(ext_slot_addr, nonce, 12);
+  W25Q64_ReadData(ext_slot_addr + 12, rx_mac,16);
+  
+  // AES Key
+  uint8_t device_key[32];
+  derive_device_key(device_key);
+  WORD round_keys[60];
+  aes_key_setup(device_key, round_keys, 256);
+
+  // Get package size
+  uint8_t first_chunk[128];
+  W25Q64_ReadData(ext_slot_addr + 28, first_chunk, 128);
+
+  uint8_t ctr[16] = {0x02};
+  memcpy(&ctr[1], nonce, 12);
+  ctr[15] = 1;
+  uint8_t si[16];
+  for (uint32_t b = 0; b < 8; b++) {
+    uint32_t blk_cnt = b + 1;
+    ctr[13] = (blk_cnt >> 16) & 0xFF;
+    ctr[14] = (blk_cnt >> 8) & 0xFF;
+    ctr[15] = blk_cnt & 0xFF;
+    aes_encrypt(ctr, si, round_keys, 256);
+    for (int i = 0; i < 16; i++) {
+      first_chunk[b * 16 + i] ^= si[i];
+    }
+  }
+
+  ota_header_t hdr;
+  memcpy(&hdr, first_chunk, sizeof(ota_header_t));
+
+  uint32_t total_flash_bytes = 0x200 + hdr.image_size;
+  uint32_t sectors_to_erase = 1;
   if (total_flash_bytes > SECTOR4_SIZE) sectors_to_erase = 2;
   if (total_flash_bytes > SECTOR4_SIZE + SECTOR567_SIZE) sectors_to_erase = 3;
   if (total_flash_bytes > SECTOR4_SIZE + 2 * SECTOR567_SIZE) sectors_to_erase = 4;
-
-  //Unlock flash and clear flags
   HAL_FLASH_Unlock();
   __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
                          FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
   IWDG->KR = IWDG_KEY_RELOAD;
-
-  // Erase internal flash sectors
-  FLASH_EraseInitTypeDef EraseInitStruct;
+  FLASH_EraseInitTypeDef EraseInitStruct = {
+    .TypeErase    = FLASH_TYPEERASE_SECTORS,
+    .VoltageRange = FLASH_VOLTAGE_RANGE_3,
+    .Sector       = FLASH_SECTOR_4,
+    .NbSectors    = sectors_to_erase
+  };
   uint32_t SectorError;
-  EraseInitStruct.TypeErase    = FLASH_TYPEERASE_SECTORS;
-  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-  EraseInitStruct.Sector       = FLASH_SECTOR_4;
-  EraseInitStruct.NbSectors    = sectors_to_erase;
   if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK) {
     HAL_FLASH_Lock();
-    printf("[FLASH] Erase failed! Sector error: %lu\r\n", (unsigned long)SectorError);
+    printf("[FLASH ERROR] Erase failed!\r\n");
     return 0;
   }
-  IWDG->KR = IWDG_KEY_RELOAD;
 
-  // Write OTA header to internal flash
-  uint8_t *header_ptr = (uint8_t *)&hdr;
-  for (uint32_t i = 0; i < sizeof(ota_header_t); i += 4) {
-    uint32_t word_val = 0xFFFFFFFF;
-    memcpy(&word_val, &header_ptr[i], 4); // Safe copy avoiding unaligned access
-    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, HEADER_START_ADDRESS + i, word_val) != HAL_OK) {
-      HAL_FLASH_Lock();
-      printf("[FLASH] Header write failed at 0x%08lX\r\n", (unsigned long)(HEADER_START_ADDRESS + i));
-      return 0;
-    }
-  }
-
-  // Write application binary to internal flash
-  uint32_t src_app_addr = ext_src_addr + sizeof(ota_header_t);
-  uint32_t dest_addr    = APP_START_ADDRESS;
-  uint32_t remaining    = hdr.image_size;
-  uint8_t buffer[256];
+  //Decrypt and install
+  uint32_t plaintext_len = sizeof(ota_header_t) + hdr.image_size;
+  uint32_t remaining = plaintext_len;
+  uint32_t src_addr = ext_slot_addr + 28;
+  uint32_t block_counter = 1;
+  uint32_t total_written = 0;
+  uint8_t chunk[256];
   while (remaining > 0) {
-    IWDG->KR = IWDG_KEY_RELOAD; // Keep watchdog alive during write
-    uint16_t read_size = (remaining > sizeof(buffer)) ? sizeof(buffer) : (uint16_t)remaining;
-    W25Q64_ReadData(src_app_addr, buffer, read_size);
-    for (uint16_t i = 0; i < read_size; i += 4) {
+    IWDG->KR = IWDG_KEY_RELOAD;
+    uint16_t chunk_len = (remaining > sizeof(chunk)) ? sizeof(chunk) : (uint16_t)remaining;
+    W25Q64_ReadData(src_addr, chunk, chunk_len);
+
+    //Decrypt
+    for (uint16_t offset = 0; offset < chunk_len; offset += 16) {
+      uint16_t blk_len = (chunk_len - offset > 16) ? 16 : (chunk_len - offset);
+      ctr[13] = (block_counter >> 16) & 0xFF;
+      ctr[14] = (block_counter >> 8) & 0xFF;
+      ctr[15] = block_counter & 0xFF;
+      block_counter++;
+      aes_encrypt(ctr, si, round_keys, 256);
+      for (int b = 0; b < blk_len; b++) chunk[offset + b] ^= si[b];
+    }
+
+    //Write internal Flash
+     for (uint16_t i = 0; i < chunk_len; i += 4) {
+      uint32_t current_plain_offset = total_written + i;
+      uint32_t flash_dest;
+      if (current_plain_offset < sizeof(ota_header_t)) {
+        flash_dest = HEADER_START_ADDRESS + current_plain_offset;
+      } else {
+        flash_dest = APP_START_ADDRESS + (current_plain_offset - sizeof(ota_header_t));
+      }
       uint32_t word_val = 0xFFFFFFFF;
-      uint16_t copy_bytes = (read_size - i >= 4) ? 4 : (read_size - i);
-      memcpy(&word_val, &buffer[i], copy_bytes);
-      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, dest_addr, word_val) != HAL_OK) {
+      uint16_t copy_bytes = (chunk_len - i >= 4) ? 4 : (chunk_len - i);
+      memcpy(&word_val, &chunk[i], copy_bytes);
+      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, flash_dest, word_val) != HAL_OK) {
         HAL_FLASH_Lock();
-        printf("[FLASH] App write failed at 0x%08lX\r\n", (unsigned long)dest_addr);
+        printf("[FLASH ERROR] Program failed at 0x%08lX\r\n", (unsigned long)flash_dest);
         return 0;
       }
-      dest_addr += 4;
     }
-    src_app_addr += read_size;
-    remaining    -= read_size;
+    total_written += chunk_len;
+    src_addr += chunk_len;
+    remaining -= chunk_len;
   }
-  // Lock internal flash
   HAL_FLASH_Lock();
-  return 1; 
+  secure_memzero(round_keys, sizeof(round_keys));
+  secure_memzero(device_key, sizeof(device_key));
+  printf("[INSTALL] Firmware decrypted and flashed successfully!\r\n");
+  return 1;
 }
 
 static void enter_recovery_mode(const char *reason)
@@ -284,9 +466,25 @@ static void enter_recovery_mode(const char *reason)
   while (1) {
     IWDG->KR = IWDG_KEY_RELOAD;
     int status = wait_for_ota_package();
+    uint8_t current_slot = boot_get_slot();
+    uint32_t new_slot_addr;
+    
+
+    if(current_slot == BOOT_SLOT_A){
+      new_slot_addr = EXT_FLASH_SLOT_B_ADDR;
+    }
+    else if(current_slot == BOOT_SLOT_B){
+      new_slot_addr = EXT_FLASH_SLOT_A_ADDR; 
+    }
+    else{
+      // Initial install
+      boot_set_slot(BOOT_SLOT_A);
+      new_slot_addr = EXT_FLASH_SLOT_B_ADDR;
+    }
+
     if (status == OTA_STATUS_OK) {
-      if (verify_staging_firmware(EXT_FLASH_DEC_ADDR) &&
-          install_firmware(EXT_FLASH_DEC_ADDR) &&
+      if (verify_encrypted_staging(new_slot_addr,1) &&
+          install_firmware(new_slot_addr) &&
           verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
         watchdog_clear_boot_fail_count();
         boot_set_state(BOOT_STATE_TESTING);
@@ -366,16 +564,46 @@ void boot_set_state(uint32_t state){
   PWR->CR |= PWR_CR_DBP;
   RTC->BKP1R = state;
   PWR->CR &= ~PWR_CR_DBP;
- }
+}
 
 uint32_t boot_get_state(void){
   return RTC->BKP1R;
+}
+
+void boot_set_slot(uint8_t slot){
+  __HAL_RCC_PWR_CLK_ENABLE();
+  PWR->CR |= PWR_CR_DBP;
+  RTC->BKP2R = slot;
+  PWR->CR &= ~PWR_CR_DBP;
+}
+
+uint8_t boot_get_slot(void){
+  return RTC->BKP2R;
 }
 
 void bootloader_run(void)
 {
   int bootloop_detected = 0;
   int was_iwdg_reset = watchdog_was_reset_by_iwdg();
+  uint8_t current_slot = boot_get_slot();
+  uint32_t current_slot_addr;
+  uint32_t new_slot_addr;
+    
+
+  if(current_slot == BOOT_SLOT_A){
+    current_slot_addr = EXT_FLASH_SLOT_A_ADDR;
+    new_slot_addr = EXT_FLASH_SLOT_B_ADDR;
+  }
+  else if(current_slot == BOOT_SLOT_B){
+    current_slot_addr = EXT_FLASH_SLOT_B_ADDR;
+    new_slot_addr = EXT_FLASH_SLOT_A_ADDR ;
+  }
+  else{
+    // Initial install    
+    boot_set_slot(BOOT_SLOT_A);
+    current_slot_addr = EXT_FLASH_SLOT_A_ADDR;
+    new_slot_addr = EXT_FLASH_SLOT_B_ADDR;
+  }
 
   if (was_iwdg_reset) {
     uint32_t fail_count = watchdog_get_boot_fail_count() + 1;
@@ -385,11 +613,8 @@ void bootloader_run(void)
       bootloop_detected = 1;
       printf("[SECURITY] Bootloop detected! Watchdog failed %lu times consecutively. Rollback firmware.\r\n", (unsigned long)fail_count);
       if (boot_get_state() == BOOT_STATE_TESTING){
-        if(verify_firmware_common(EXT_FLASH_BACKUP_ADDR, 
-                       EXT_FLASH_BACKUP_ADDR + sizeof(ota_header_t), 
-                       read_external_flash, 
-                       0)){
-                        if(install_firmware(EXT_FLASH_BACKUP_ADDR)){
+        if(verify_encrypted_staging(current_slot_addr,0)){
+                        if(install_firmware(current_slot_addr)){
                         printf("[BOOT] Rollback complted successfully!\r\n");
                         boot_set_state(BOOT_STATE_NORMAL);  // 정상 상태로 원복!
                         watchdog_clear_boot_fail_count();  
@@ -422,22 +647,9 @@ void bootloader_run(void)
     printf("[BOOT] User Button (B1) pressed! Entering OTA Mode...\r\n");
     int ota_status = wait_for_ota_package();
     if (ota_status == OTA_STATUS_OK) {
-      if(verify_staging_firmware(EXT_FLASH_DEC_ADDR)){
-        // Backup firmware
-        if(verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)){
-          if(backup_firmware(EXT_FLASH_BACKUP_ADDR)){
-            printf("[BOOT] Backup successfully!\r\n");
-          }
-          else{
-            printf("[BOOT] Backup failed.\r\n");
-            HAL_Delay(100);
-            NVIC_SystemReset();
-          }
-        }
-        
-        
+      if(verify_encrypted_staging(new_slot_addr,1)){
         // Add Install new firmware
-        if(install_firmware(EXT_FLASH_DEC_ADDR)){
+        if(install_firmware(new_slot_addr)){
           printf("[BOOT] New firmware installed successfully!\r\n");
           if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
             boot_set_state(BOOT_STATE_TESTING);
@@ -449,23 +661,22 @@ void bootloader_run(void)
           else{
             printf("[BOOT] Update failed! Roolback previous firmware\r\n");
             //rollback code
-            if(install_firmware(EXT_FLASH_BACKUP_ADDR)){
-              printf("[BOOT] Rollback complted successfully!\r\n");
-              boot_set_state(BOOT_STATE_NORMAL);
-              watchdog_clear_boot_fail_count();
-              HAL_Delay(100);
-              NVIC_SystemReset();
+            if(verify_encrypted_staging(current_slot_addr, 0)){
+              if(install_firmware(current_slot_addr)){
+                printf("[BOOT] Rollback complted successfully!\r\n");
+                boot_set_state(BOOT_STATE_NORMAL);
+                watchdog_clear_boot_fail_count();
+                HAL_Delay(100);
+                NVIC_SystemReset();
+              }
             }
           }
         }
         else{
           printf("[BOOT] Update failed! Roolback previous firmware\r\n");
             //rollback code
-          if(verify_firmware_common(EXT_FLASH_BACKUP_ADDR, 
-            EXT_FLASH_BACKUP_ADDR + sizeof(ota_header_t), 
-            read_external_flash, 
-            0)){
-              if(install_firmware(EXT_FLASH_BACKUP_ADDR)){
+          if(verify_encrypted_staging(current_slot_addr,0)){
+              if(install_firmware(current_slot_addr)){
               printf("[BOOT] Rollback complted successfully!\r\n");
               HAL_Delay(100);
               watchdog_clear_boot_fail_count();

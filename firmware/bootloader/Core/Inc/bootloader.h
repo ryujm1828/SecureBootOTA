@@ -32,6 +32,8 @@ typedef struct {
 } ota_header_t;
 #pragma pack(pop)
 
+void derive_device_key(uint8_t key[32]);
+
 /**
  * @brief  Verify the OTA header structure and its fields.
  * @retval 1: Valid, 0: Error
@@ -48,10 +50,11 @@ int verify_stored_firmware(uint32_t header_address, uint32_t app_address);
  * @brief  Verify staged firmware in external flash
  * @retval 1: Valid, 0: Error
  */
-int verify_staging_firmware(uint32_t ext_header_address);
+
+int verify_encrypted_staging(uint32_t ext_slot_addr,int check_rollback);
 
 /**
- * @brief  Install firmware from external flash to internal flash.
+ * @brief  Install encrypted firmware from external flash to internal flash.
  * @param  ext_src_addr: Start address in external flash (Header + Binary)
  * @retval 1: Success, 0: Error
  */
@@ -73,6 +76,10 @@ int backup_firmware(uint32_t ext_backup_addr);
 void boot_set_state(uint32_t state);
 
 uint32_t boot_get_state(void);
+
+void boot_set_slot(uint8_t slot);
+
+uint8_t boot_get_slot(void);
 
 /**
  * @brief  Main bootloader logic routine:

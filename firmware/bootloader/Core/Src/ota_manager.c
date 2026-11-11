@@ -153,7 +153,7 @@ int wait_for_ota_package(void)
 
   uint32_t expected_seq = 0;
   uint32_t total_received = 0;
-  uint32_t ext_flash_addr = EXT_FLASH_ENC_ADDR;
+  uint32_t ext_flash_addr = 0;
 
   uint8_t transfer_started = 0;
   uint32_t session_start = HAL_GetTick();
@@ -244,7 +244,18 @@ int wait_for_ota_package(void)
       
       expected_seq = 0;
       total_received = 0;
-      ext_flash_addr = EXT_FLASH_ENC_ADDR;
+      uint8_t slot = boot_get_slot();
+
+      if(slot == BOOT_SLOT_A){
+        ext_flash_addr = EXT_FLASH_SLOT_B_ADDR;
+      }
+      else if(slot == BOOT_SLOT_B){
+        ext_flash_addr = EXT_FLASH_SLOT_A_ADDR;
+      }
+      else{
+        boot_set_slot(BOOT_SLOT_A);
+        ext_flash_addr = EXT_FLASH_SLOT_B_ADDR;
+      }
       transfer_started = 1;
       last_activity_tick = HAL_GetTick();
       send_response(ACK);
@@ -288,7 +299,9 @@ int wait_for_ota_package(void)
         session_start = HAL_GetTick();
         continue;
       }
+      /*
       uint8_t device_uid[12];
+
 #if USE_REAL_DEVICE_UID
       // Read 96-bit Unique ID from STM32 factory registers
       memcpy(device_uid, (const void *)STM32_UID_BASE, 12);
@@ -297,34 +310,11 @@ int wait_for_ota_package(void)
       const uint8_t sample_uid[12] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
       memcpy(device_uid, sample_uid, 12);
 #endif
-
-      // Derive device-specific AES key using HKDF-SHA256
-      uint8_t device_aes_key[32];
-      hkdf_sha256(OTA_SALT, OTA_SALT_LEN,
-                  MASTER_KEY, MASTER_KEY_LEN,
-                  device_uid, 12,
-                  device_aes_key, 32);
-
-      // Decrypt staging package, verify it, and install to internal flash
-      int dec_ok = decrypt_ota_package(EXT_FLASH_ENC_ADDR, EXT_FLASH_DEC_ADDR, total_received, device_aes_key);
-      
-      // Wipe derived device key and UID from RAM
-      secure_memzero(device_aes_key, sizeof(device_aes_key));
-      secure_memzero(device_uid, sizeof(device_uid));
-
-      if (dec_ok) {
-        send_response(ACK);
-        printf("[OTA] Firmware package decrypted successfully.\r\n");
-        HAL_Delay(100);
-        return OTA_STATUS_OK;
-      } else {
-        send_response(NAK);
-        printf("[OTA ERROR] Decryption, verification, or installation failed!\r\n");
-        transfer_started = 0;
-        expected_seq = 0;
-        total_received = 0;
-        session_start = HAL_GetTick();
-      }
+*/
+      send_response(ACK);
+      printf("[OTA] Firmware package download successfully.\r\n");
+      HAL_Delay(100);
+      return OTA_STATUS_OK;
     }
   }
 }

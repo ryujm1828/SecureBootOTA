@@ -33,9 +33,8 @@ extern "C" {
 /* ========================================================================== */
 /* External Flash (W25Q64) Memory Map                                         */
 /* ========================================================================== */
-#define EXT_FLASH_ENC_ADDR   0x000000 // Encrypted OTA package received via UART
-#define EXT_FLASH_DEC_ADDR   0x100000 // Decrypted OTA package (1MB offset)
-#define EXT_FLASH_BACKUP_ADDR   0x200000 // Backup firmware (2MB offset)
+#define EXT_FLASH_SLOT_A_ADDR   0x000000 // Encrypted OTA package received via UART
+#define EXT_FLASH_SLOT_B_ADDR   0x100000 // Decrypted OTA package (1MB offset)
 #define EXT_FLASH_SIZE  0x800000U
 
 /* ========================================================================== */
@@ -77,6 +76,12 @@ extern "C" {
 /* ========================================================================== */
 #define BOOT_STATE_NORMAL 0xA5A5A5A5
 #define BOOT_STATE_TESTING 0x5A5A5A5A
+
+/* ========================================================================== */
+/* Boot Slot Codes                                       */
+/* ========================================================================== */
+#define BOOT_SLOT_A 'A'
+#define BOOT_SLOT_B 'B'
 
 /* ========================================================================== */
 /* OTA Status Return Codes                                                    */

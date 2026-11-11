@@ -2,17 +2,15 @@
 
 void boot_client_confirm(void)
 {
-  // 1. PWR 클럭 활성화
-  __HAL_RCC_PWR_CLK_ENABLE();
-
-  // 2. RTC 및 Backup 레지스터 쓰기 보호(락) 해제
-  PWR->CR |= PWR_CR_DBP;
-
-  // 3. 펌웨어 정상 확정 마크(BOOT_STATE_NORMAL) 기록
-  RTC->BKP1R = BOOT_STATE_NORMAL;
-
-  // 4. 쓰기 보호(락) 다시 잠그기
-  PWR->CR &= ~PWR_CR_DBP;
+    __HAL_RCC_PWR_CLK_ENABLE();
+    PWR->CR |= PWR_CR_DBP;
+    if (RTC->BKP1R == BOOT_STATE_TESTING) {
+    uint8_t cur_slot = (uint8_t)RTC->BKP2R;
+        uint8_t new_slot = (cur_slot == BOOT_SLOT_B) ? BOOT_SLOT_A : BOOT_SLOT_B;
+        RTC->BKP2R = new_slot;          
+        RTC->BKP1R = BOOT_STATE_NORMAL;   
+    }
+    PWR->CR &= ~PWR_CR_DBP;
 }
 
 void boot_client_feed_watchdog(void)
