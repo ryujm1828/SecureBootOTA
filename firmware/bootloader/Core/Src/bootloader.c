@@ -296,7 +296,9 @@ int verify_encrypted_staging(uint32_t ext_slot_addr,int check_rollback){
 
 void jump_to_application(uint32_t app_address)
 { 
-  printf("Jumping to App at 0x%08lX...\r\n", (unsigned long)app_address);
+  const ota_header_t *hdr = (const ota_header_t *)HEADER_START_ADDRESS;
+  printf("Jumping to App (Version: %lu) at 0x%08lX...\r\n", 
+         (unsigned long)hdr->image_version, (unsigned long)app_address);
   while (!(USART2->SR & USART_SR_TC));
   uint32_t msp_val = *(__IO uint32_t *)app_address;
   uint32_t reset_handler = *(__IO uint32_t *)(app_address + 4);
@@ -647,6 +649,10 @@ void bootloader_run(void)
     printf("[BOOT] User Button (B1) pressed! Entering OTA Mode...\r\n");
     int ota_status = wait_for_ota_package();
     if (ota_status == OTA_STATUS_OK) {
+      uint8_t active_slot = boot_get_slot();
+      new_slot_addr = (active_slot == BOOT_SLOT_B) ? EXT_FLASH_SLOT_A_ADDR : EXT_FLASH_SLOT_B_ADDR;
+
+      
       if(verify_encrypted_staging(new_slot_addr,1)){
         // Add Install new firmware
         if(install_firmware(new_slot_addr)){

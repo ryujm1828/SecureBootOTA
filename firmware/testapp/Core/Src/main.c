@@ -95,13 +95,13 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  boot_client_confirm();
+  //boot_client_confirm();
   while (1)
   {
     /* USER CODE END WHILE */
     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-	  HAL_Delay(50);
-    boot_client_feed_watchdog();
+	  HAL_Delay(100);
+    //boot_client_feed_watchdog();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
