@@ -5,16 +5,16 @@
 
 void watchdog_start(uint32_t timeout_ms)
 {
-    uint32_t reload = (timeout_ms / 8);
-    if (reload > 0xFFF) {
-        reload = 0xFFF;
+    uint32_t reload = (timeout_ms / 8U);
+    if (reload > 0xFFFU) {
+        reload = 0xFFFU;
     }
 
     IWDG->KR = IWDG_KEY_ENABLE;
     IWDG->KR = IWDG_KEY_WRITE_EN;
     IWDG->PR = 0x06;
     IWDG->RLR = (uint16_t)reload;
-    while (IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU));
+    while ((IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU))!= 0U){} /*wait*/
     IWDG->KR = IWDG_KEY_RELOAD;
 }
 

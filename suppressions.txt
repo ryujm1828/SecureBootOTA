@@ -1,0 +1,38 @@
+# MISRA-C:2012 & Cppcheck Deviation / Suppressions List
+
+# 외부 라이브러리(STM32 HAL / CMSIS) 및 자동 생성 설정 헤더 내부 경고 무시
+*:*Drivers*
+*:*stm32f4xx_hal_conf.h
+
+# ===============================================================
+# 공용
+# ===============================================================
+
+# [Deviation: Rule 11.4] 하드웨어 메모리 맵 레지스터 접근 허용
+# 사유: MCU 주변장치(IWDG, RTC, RCC, PWR 등) 제어 매크로 사용이 필연적임.
+misra-c2012-11.4
+
+# [Deviation: Rule 15.5] 다중 리턴 허용
+# 사유: 해제할 자원이 없을 때도 단일 리턴만 사용하면 코드의 가독성이 내려감.
+misra-c2012-15.5
+
+# [Deviation: Rule 17.7] 표준 라이브러리 메모리 조작 함수 반환값 미사용 허용
+# 사유: memcpy, memset의 반환값(포인터)은 로직상 불필요하므로 미사용 허용.
+misra-c2012-17.7
+
+# 시스템 헤더 포함 경고 무시
+missingIncludeSystem
+variableScope
+
+# ===============================================================
+# boot_watchdog.c
+# ===============================================================
+
+# [Deviation: Rule 14.4 (boot_watchdog.c)]
+# 사유: ST HAL 매크로의 do-while(0U)로 인한 예외 승인
+misra-c2012-14.4:*boot_watchdog.c
+
+# [Deviation: Rule 8.7 (boot_watchdog.c)]
+# 사유: 단일 파일 검사 시 발생하는 오탐 제거
+misra-c2012-8.7:*boot_watchdog.c
+

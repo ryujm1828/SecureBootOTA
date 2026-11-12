@@ -56,3 +56,7 @@ TouchGFX/simulator/msvs/.vs
 
 # OTA files
 *.ota
+
+# MISRA-C check
+*.txt
+!suppressions.txt

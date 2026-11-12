@@ -1,0 +1,83 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "MISRA-C Check (Current File)",
+            "type": "process",
+            "command": "cppcheck",
+            "args": [
+                "--addon=misra",
+                "-Ifirmware/bootloader/Core/Inc",
+                "-Ifirmware/bootloader/Drivers/STM32F4xx_HAL_Driver/Inc",
+                "-Ifirmware/bootloader/Drivers/CMSIS/Include",
+                "-Ifirmware/bootloader/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+                "-DSTM32F411xE",
+                "-DUSE_HAL_DRIVER",
+                "-D__GNUC__",
+                "--enable=style",
+                "--suppressions-list=suppressions.txt",
+                "--template={file}:{line}:{column}: {severity}: [{id}] {message}",
+                "${file}"
+            ],
+            "problemMatcher": {
+                "owner": "cppcheck",
+                "fileLocation": ["autoDetect", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error|style|performance|portability|information):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "never",
+                "focus": false,
+                "panel": "shared"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "MISRA-C Check (Whole Project)",
+            "type": "process",
+            "command": "cppcheck",
+            "args": [
+                "--addon=misra",
+                "-Ifirmware/bootloader/Core/Inc",
+                "-Ifirmware/bootloader/Drivers/STM32F4xx_HAL_Driver/Inc",
+                "-Ifirmware/bootloader/Drivers/CMSIS/Include",
+                "-Ifirmware/bootloader/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+                "-DSTM32F411xE",
+                "-DUSE_HAL_DRIVER",
+                "-D__GNUC__",
+                "--enable=style",
+                "--suppressions-list=suppressions.txt",
+                "--template={file}:{line}:{column}: {severity}: [{id}] {message}",
+                "firmware/bootloader/Core/Src"
+            ],
+            "problemMatcher": {
+                "owner": "cppcheck",
+                "fileLocation": ["autoDetect", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error|style|performance|portability|information):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "never",
+                "focus": false,
+                "panel": "shared"
+            }
+        }
+    ]
+}
