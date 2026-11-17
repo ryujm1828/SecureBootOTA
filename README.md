@@ -76,6 +76,21 @@ python host/ota_encrypt.py --input host/app_v1.ota --output host/app_v1_enc.bin
 python host/ota_send.py --port COM5 --package host/app_v1_enc.bin
 ```
 
+## 배포 시 주의사항
+### 키 교체
+이 저장소의 `keys/test_privkey.pem`과 펌웨어에 하드코딩된 키는 테스트용 샘플이므로, 실제 배포 시 아래 내용을 모두 교체해야 함
+
+- `keys/test_privkey.pem`: ECDSA 개인키 (서명용, PC 보관)
+- `firmware/bootloader/Core/Src/boot_keys.c`: `ecdsa_public_key[64]`(ECDSA 공개키)  `MASTER_KEY[32]` (MASTER_KEY)
+- `firmware/bootloader/Core/Inc/boot_config.h`: USE_REAL_DEVICE_UID (1로 설정해야 실제 기기의 UID 사용)
+- `host/ota_encrypt.py`: MASTER_KEY, target_device_uid(실제 기기 uid)
+
+공개키는 개인키에서 `host/extract_pubkey.py`로 추출해 `boot_keys.c`에 반영
+
+### RDP (Read Out Protection) 설정
+- 현재 RDP Level 0으로 설정되어 있음
+- 실제 배포 시에는 STM32CubeProgrammer에서 RDP Level 2로 설정해야 펌웨어 평문 유출을 막을 수 있음
+
 ## 사용한 오픈소스 코드
 - [B-Con/crypto-algorithms](https://github.com/B-Con/crypto-algorithms) - SHA-256, AES 구현
 - [kmackay/micro-ecc](https://github.com/kmackay/micro-ecc) - uECC (ECDSA P-256)
