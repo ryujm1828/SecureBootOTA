@@ -583,6 +583,81 @@ uint8_t boot_get_slot(void){
   return RTC->BKP2R;
 }
 
+static int read_encrypted_slot_header(uint32_t ext_slot_addr, ota_header_t *out_hdr)
+{
+  uint8_t nonce[12];
+  uint8_t header_buf[128];
+
+  if (!W25Q64_ReadData(ext_slot_addr, nonce, 12U) ||
+      !W25Q64_ReadData(ext_slot_addr + 28U, header_buf, 128U)) {
+    return 0;
+  }
+
+  uint8_t device_key[32];
+  derive_device_key(device_key);
+  WORD round_keys[60];
+  aes_key_setup(device_key, round_keys, 256);
+  secure_memzero(device_key, sizeof(device_key));
+
+  uint8_t ctr[16] = {0x02U};
+  memcpy(&ctr[1], nonce, 12U);
+  uint8_t si[16];
+
+  for (uint32_t b = 0U; b < 8U; b++) {
+    uint32_t blk_cnt = b + 1U;
+    ctr[13] = (uint8_t)((blk_cnt >> 16) & 0xFFU);
+    ctr[14] = (uint8_t)((blk_cnt >> 8) & 0xFFU);
+    ctr[15] = (uint8_t)(blk_cnt & 0xFFU);
+    aes_encrypt(ctr, si, round_keys, 256);
+    for (uint32_t i = 0U; i < 16U; i++) {
+      header_buf[(b * 16U) + i] ^= si[i];
+    }
+  }
+
+  secure_memzero(round_keys, sizeof(round_keys));
+  secure_memzero(si, sizeof(si));
+  secure_memzero(ctr, sizeof(ctr));
+
+  memcpy(out_hdr, header_buf, sizeof(ota_header_t));
+  secure_memzero(header_buf, sizeof(header_buf));
+
+  if ((out_hdr->magic != EXPECTED_MAGIC) ||
+      (out_hdr->format_version != EXPECTED_FORMAT_VERSION) ||
+      (out_hdr->header_size != EXPECTED_HEADER_SIZE) ||
+      (out_hdr->target_id != EXPECTED_TARGET_ID) ||
+      (out_hdr->image_size == 0U) ||
+      (out_hdr->image_size > MAX_APP_BINARY_SIZE)) {
+    return 0;
+  }
+
+  return 1;
+}
+
+static uint8_t recover_active_slot(void)
+{
+  const ota_header_t *installed_hdr = (const ota_header_t *)HEADER_START_ADDRESS;
+
+  if (installed_hdr->magic == EXPECTED_MAGIC) {
+    ota_header_t slot_hdr;
+    if (read_encrypted_slot_header(EXT_FLASH_SLOT_B_ADDR, &slot_hdr) &&
+        (slot_hdr.image_version == installed_hdr->image_version) &&
+        (constant_time_memcmp(slot_hdr.payload_sha256, installed_hdr->payload_sha256, 32U) == 0)) {
+      printf("[BOOT] Cold boot: Restored active slot -> Slot B (v%lu)\r\n",
+             (unsigned long)slot_hdr.image_version);
+      return BOOT_SLOT_B;
+    }
+    if (read_encrypted_slot_header(EXT_FLASH_SLOT_A_ADDR, &slot_hdr) &&
+        (slot_hdr.image_version == installed_hdr->image_version) &&
+        (constant_time_memcmp(slot_hdr.payload_sha256, installed_hdr->payload_sha256, 32U) == 0)) {
+      printf("[BOOT] Cold boot: Restored active slot -> Slot A (v%lu)\r\n",
+             (unsigned long)slot_hdr.image_version);
+      return BOOT_SLOT_A;
+    }
+  }
+
+  return BOOT_SLOT_A;
+}
+
 void bootloader_run(void)
 {
   int bootloop_detected = 0;
@@ -590,21 +665,18 @@ void bootloader_run(void)
   uint8_t current_slot = boot_get_slot();
   uint32_t current_slot_addr;
   uint32_t new_slot_addr;
-    
 
-  if(current_slot == BOOT_SLOT_A){
+  if ((current_slot != BOOT_SLOT_A) && (current_slot != BOOT_SLOT_B)) {
+    current_slot = recover_active_slot();
+    boot_set_slot(current_slot);
+  }
+
+  if (current_slot == BOOT_SLOT_A) {
     current_slot_addr = EXT_FLASH_SLOT_A_ADDR;
     new_slot_addr = EXT_FLASH_SLOT_B_ADDR;
-  }
-  else if(current_slot == BOOT_SLOT_B){
+  } else {
     current_slot_addr = EXT_FLASH_SLOT_B_ADDR;
-    new_slot_addr = EXT_FLASH_SLOT_A_ADDR ;
-  }
-  else{
-    // Initial install    
-    boot_set_slot(BOOT_SLOT_A);
-    current_slot_addr = EXT_FLASH_SLOT_A_ADDR;
-    new_slot_addr = EXT_FLASH_SLOT_B_ADDR;
+    new_slot_addr = EXT_FLASH_SLOT_A_ADDR;
   }
 
   if (was_iwdg_reset) {

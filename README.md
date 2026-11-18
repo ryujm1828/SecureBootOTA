@@ -8,15 +8,6 @@ STM32F411RE 기반 보안 OTA 부트로더 - ECDSA 서명 검증, AES-256-CCM �
 - A/B 슬롯 기반 롤백 방어
 - IWDG 워치독 기반 부트루프 감지 및 자동 복구
 
-## 통신 흐름
-1. 앱 패키지 생성: `ota_pack.py` - SHA-256 계산, OTA 헤더 조립, ECDSA P-256 서명 → `.ota` 파일
-2. 앱 패키지 암호화: `ota_encrypt.py` - HKDF 키 파생, AES-256-CCM 암호화 → `.bin` 파일
-3. 앱 패키지 전송: `ota_send.py` - UART 115200bps 커스텀 프로토콜로 MCU에 전송
-4. OTA 수신 및 외부 Flash 저장: A/B 슬롯 중 비활성 슬롯에 암호화 상태로 저장
-5. 펌웨어 검증: 헤더 복호화 → 헤더 필드/버전/ECDSA 검증 → 전체 복호화하며 MAC·SHA-256 검증
-6. 설치: 검증 통과 시 SRAM 버퍼에서 복호화하여 내부 Flash에 직접 기록, 실패 시 이전 슬롯으로 롤백
-7. 앱 점프: VTOR 재설정 후 앱의 Reset Handler로 점프
-
 ## 메모리 맵
 ### W25Q64 (외부 Flash, 8MB)
 | 영역   | 주소     | 크기 | 용도 |
@@ -33,12 +24,30 @@ STM32F411RE 기반 보안 OTA 부트로더 - ECDSA 서명 검증, AES-256-CCM �
 | OTA Header  | 0x08010000 | 512B              | 현재 설치된 펌웨어의 OTA 헤더 |
 | Application | 0x08010200 | Sector 4~7 (448KB)| 애플리케이션 |
 
-## 펌웨어 검증 (5단계)
+## 통신 흐름
+1. 앱 패키지 생성: `ota_pack.py` - SHA-256 계산, OTA 헤더 조립, ECDSA P-256 서명 → `.ota` 파일
+2. 앱 패키지 암호화: `ota_encrypt.py` - HKDF 키 파생, AES-256-CCM 암호화 → `.bin` 파일
+3. 앱 패키지 전송: `ota_send.py` - UART 115200bps 커스텀 프로토콜로 MCU에 전송
+4. OTA 수신 및 외부 Flash 저장: A/B 슬롯 중 비활성 슬롯에 암호화 상태로 저장
+5. 펌웨어 검증: 헤더 복호화 → 헤더 필드/버전/ECDSA 검증 → 전체 복호화하며 MAC·SHA-256 검증
+6. 설치: 검증 통과 시 SRAM 버퍼에서 복호화하여 내부 Flash에 직접 기록, 실패 시 이전 슬롯으로 롤백
+7. 앱 점프: VTOR 재설정 후 앱의 Reset Handler로 점프
+
+## 펌웨어 검증 절차
 1. OTA 헤더 필드 검증 - Magic(`OTAF`), Version, HeaderSize, TargetID(`0x0411`), ImageSize 범위
 2. 안티 롤백 - 신규 버전이 현재 설치 버전 이상인지 확인 (롤백 복원 시에는 생략)
 3. ECDSA P-256 서명 검증 - 헤더 56B의 SHA-256 해시에 대한 서명 검증
 4. AES-CCM MAC 태그 검증 - 전체 암호문의 CBC-MAC과 수신 MAC 비교 (Constant-time)
 5. SHA-256 페이로드 해시 검증 - 복호화된 앱 바이너리 해시와 헤더 내 해시 비교 (Constant-time)
+
+## 롤백 흐름 (v1->v2 업데이트 예시)
+1. 현재 v1 펌웨어가 정상 동작 중이며, 외부 Flash의 Slot A에 v1 암호화 패키지가 보관된 상태
+2. v2 업데이트 수신 시 Slot B에 v2 암호화 패키지를 저장하고 5단계 검증 수행
+3. 검증 통과 시 v2를 복호화하여 내부 Flash의 애플리케이션 영역에 설치
+부트 상태를 `TESTING`으로 변경 후 재부팅하고, IWDG 워치독을 활성화한 뒤 v2로 점프
+4. 실행 결과에 따라 분기:
+- 정상 동작 시: 앱에서 `boot_client_confirm()`을 호출해 활성 슬롯을 Slot B로 전환하고 상태를 NORMAL로 변경
+- 오류/크래시 발생 시: `TESTING` 상태에서 워치독 리셋이 연속 3회 발생하면 Slot A에 보관된 v1을 재설치하고 상태를 `NORMAL`로 복원
 
 ## 발견된 취약점 및 해결
 [세부 취약점 보고서](/docs/취약점%20보고서/취약점_보고서.md)
