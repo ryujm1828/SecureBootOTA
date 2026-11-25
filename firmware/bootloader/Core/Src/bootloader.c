@@ -485,14 +485,16 @@ static void enter_recovery_mode(const char *reason)
     }
 
     if (status == OTA_STATUS_OK) {
-      if (verify_encrypted_staging(new_slot_addr,1) &&
-          install_firmware(new_slot_addr) &&
-          verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
-        watchdog_clear_boot_fail_count();
-        boot_set_state(BOOT_STATE_TESTING);
-        printf("[RECOVERY] Update installed! Rebooting system...\r\n");
-        HAL_Delay(100);
-        NVIC_SystemReset();
+      if (verify_encrypted_staging(new_slot_addr,1)){
+        boot_set_state(BOOT_STATE_INSTALLING);
+        if(install_firmware(new_slot_addr) &&
+        verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+          watchdog_clear_boot_fail_count();
+          boot_set_state(BOOT_STATE_TESTING);
+          printf("[RECOVERY] Update installed! Rebooting system...\r\n");
+          HAL_Delay(100);
+          NVIC_SystemReset();
+        }
       }
       else {
         printf("[RECOVERY] Firmware verification/install failed! Waiting again...\r\n");
@@ -727,6 +729,7 @@ void bootloader_run(void)
       
       if(verify_encrypted_staging(new_slot_addr,1)){
         // Add Install new firmware
+        boot_set_state(BOOT_STATE_INSTALLING);
         if(install_firmware(new_slot_addr)){
           printf("[BOOT] New firmware installed successfully!\r\n");
           if (verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
@@ -781,6 +784,42 @@ void bootloader_run(void)
     watchdog_start(8000);
     jump_to_application(APP_START_ADDRESS);
   } else {
+    uint32_t state = boot_get_state();
+
+    // Power off while installing
+    if (state == BOOT_STATE_INSTALLING) {
+      if (verify_encrypted_staging(new_slot_addr, 0) &&
+          install_firmware(new_slot_addr) &&
+          verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+        
+        boot_set_state(BOOT_STATE_TESTING);
+        watchdog_clear_boot_fail_count();
+        HAL_Delay(100);
+        NVIC_SystemReset();
+      } else {
+        if (verify_encrypted_staging(current_slot_addr, 0) &&
+            install_firmware(current_slot_addr) &&
+            verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+          
+          boot_set_state(BOOT_STATE_NORMAL);
+          watchdog_clear_boot_fail_count();
+          HAL_Delay(100);
+          NVIC_SystemReset();
+        }
+      }
+    }
+    else if (state == BOOT_STATE_NORMAL){
+      if (verify_encrypted_staging(current_slot_addr, 0) &&
+        install_firmware(current_slot_addr) &&
+        verify_stored_firmware(HEADER_START_ADDRESS, APP_START_ADDRESS)) {
+      
+      boot_set_state(BOOT_STATE_NORMAL);
+      watchdog_clear_boot_fail_count();
+      printf("[RECOVERY] Stable slot restored successfully! Rebooting...\r\n");
+      HAL_Delay(100);
+      NVIC_SystemReset();
+    }
     enter_recovery_mode("No valid/verified App found");
+    }
   }
 }
