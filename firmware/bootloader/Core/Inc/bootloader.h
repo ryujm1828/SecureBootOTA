@@ -55,7 +55,7 @@ int verify_encrypted_staging(uint32_t ext_slot_addr,int check_rollback);
 
 /**
  * @brief  Install encrypted firmware from external flash to internal flash.
- * @param  ext_src_addr: Start address in external flash (Header + Binary)
+ * @param  ext_src_addr: Start address in external flash (Plaintext Header + Nonce + MAC + Encrypted Binary)
  * @retval 1: Success, 0: Error
  */
 int install_firmware(uint32_t ext_src_addr);

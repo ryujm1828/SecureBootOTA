@@ -234,8 +234,9 @@ int wait_for_ota_package(void)
                           ((uint32_t)payload[1] << 8) |
                           ((uint32_t)payload[2] << 16) |
                           ((uint32_t)payload[3] << 24);
-      uint32_t max_allowed_pkg = 28 + sizeof(ota_header_t) + MAX_APP_BINARY_SIZE;
-      if (expected_total_size <= 28 || expected_total_size > max_allowed_pkg) {
+      uint32_t min_allowed_pkg = (uint32_t)sizeof(ota_header_t) + 28U;
+      uint32_t max_allowed_pkg = min_allowed_pkg + MAX_APP_BINARY_SIZE;
+      if ((expected_total_size <= min_allowed_pkg) || (expected_total_size > max_allowed_pkg)) {
         printf("[OTA ERROR] Invalid package size: %lu bytes (Max: %lu)\r\n", 
               (unsigned long)expected_total_size, (unsigned long)max_allowed_pkg);
         send_response(NAK);

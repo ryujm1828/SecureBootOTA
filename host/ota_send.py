@@ -75,9 +75,9 @@ def send_ota_package(port, baudrate, file_path):
     # Check package format
     magic, _, _, target_id, img_version = struct.unpack_from("<4s H H I I", ota_data, 0)
     if magic == OTA_MAGIC:
-        print(f"Plain OTA package detected (Target ID: 0x{target_id:04X}, Version: {img_version})")
+        print(f"OTA package header detected (Target ID: 0x{target_id:04X}, Version: {img_version})")
     else:
-        print("Encrypted OTA package detected (Header check bypassed).")
+        print("Unknown/raw OTA package detected (Header check bypassed).")
 
     print(f"{port} ({baudrate} bps) - Sending OTA package '{file_path}' ({total_size} bytes)")
     try:

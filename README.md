@@ -29,18 +29,18 @@ STM32F411RE 기반 보안 OTA 부트로더 - ECDSA 서명 검증, AES-256-CCM �
 
 ## 통신 흐름
 1. 앱 패키지 생성: `ota_pack.py` - SHA-256 계산, OTA 헤더 조립, ECDSA P-256 서명 → `.ota` 파일
-2. 앱 패키지 암호화: `ota_encrypt.py` - HKDF 키 파생, AES-256-CCM 암호화 → `.bin` 파일
+2. 앱 패키지 암호화: `ota_encrypt.py` - HKDF 키 파생, 헤더 평문 유지(AAD 인증) + 페이로드 AES-256-CCM 암호화 → `.bin` 파일
 3. 앱 패키지 전송: `ota_send.py` - UART 115200bps 커스텀 프로토콜로 MCU에 전송
-4. OTA 수신 및 외부 Flash 저장: A/B 슬롯 중 비활성 슬롯에 암호화 상태로 저장
-5. 펌웨어 검증: 헤더 복호화 → 헤더 필드/버전/ECDSA 검증 → 전체 복호화하며 MAC·SHA-256 검증
-6. 설치: 검증 통과 시 SRAM 버퍼에서 복호화하여 내부 Flash에 직접 기록, 실패 시 이전 슬롯으로 롤백
+4. OTA 수신 및 외부 Flash 저장: A/B 슬롯 중 비활성 슬롯에 `[평문 헤더 + Nonce + MAC + 암호화된 페이로드]` 형태로 저장
+5. 펌웨어 검증: 평문 헤더 필드/버전/ECDSA 검증 → 페이로드 복호화하며 MAC(AAD 포함)·SHA-256 검증
+6. 설치: 검증 통과 시 평문 헤더와 SRAM 버퍼에서 복호화한 페이로드를 내부 Flash에 직접 기록, 실패 시 이전 슬롯으로 롤백
 7. 앱 점프: VTOR 재설정 후 앱의 Reset Handler로 점프
 
 ## 펌웨어 검증 절차
 1. OTA 헤더 필드 검증 - Magic(`OTAF`), Version, HeaderSize, TargetID(`0x0411`), ImageSize 범위
 2. 안티 롤백 - 신규 버전이 현재 설치 버전 이상인지 확인 (롤백 복원 시에는 생략)
 3. ECDSA P-256 서명 검증 - 헤더 56B의 SHA-256 해시에 대한 서명 검증
-4. AES-CCM MAC 태그 검증 - 전체 암호문의 CBC-MAC과 수신 MAC 비교 (Constant-time)
+4. AES-CCM MAC 태그 검증 - 평문 헤더(AAD)와 복호화된 페이로드의 CBC-MAC과 수신 MAC 비교 (Constant-time)
 5. SHA-256 페이로드 해시 검증 - 복호화된 앱 바이너리 해시와 헤더 내 해시 비교 (Constant-time)
 
 ## 롤백 흐름 (v1->v2 업데이트 예시)
@@ -60,7 +60,7 @@ STM32F411RE 기반 보안 OTA 부트로더 - ECDSA 서명 검증, AES-256-CCM �
 - USB 로직 분석기로 SPI 버스를 도청해 펌웨어 전체 추출 성공 확인 (복호화된 펌웨어를 평문으로 읽어올 때 도청됨)
 
 ### 패치
-- 외부 Flash에는 암호화된 패키지만 저장 (평문 저장소 완전 제거)
+- 외부 Flash에는 페이로드가 암호화된 패키지만 저장
 - 복호화는 SRAM 버퍼에서만 수행 후 즉시 내부 Flash에 기록
 
 ## 사용 기술 스택
